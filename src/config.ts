@@ -17,6 +17,17 @@ function required(name: string): string {
   return value;
 }
 
+/** Comma-separated origin allowlist, e.g. "http://localhost:8081,http://localhost:19006". */
+function parseOrigins(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+}
+
+const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS ?? 30);
+
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: Number(process.env.PORT ?? 3000),
@@ -28,6 +39,15 @@ export const config = {
     password: required('DB_PASSWORD'),
     ssl: process.env.DB_SSL === 'true',
   },
+  session: {
+    ttlDays: SESSION_TTL_DAYS,
+    ttlMs: SESSION_TTL_DAYS * 24 * 60 * 60 * 1000,
+  },
+  /**
+   * Browser origins allowed to call this API. Empty means "no browser origins",
+   * which is the correct default for native-only clients.
+   */
+  corsOrigins: parseOrigins(process.env.CORS_ORIGINS),
 };
 
 /**
