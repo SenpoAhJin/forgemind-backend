@@ -31,6 +31,12 @@ const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS ?? 30);
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: Number(process.env.PORT ?? 3000),
+  /**
+   * Interface to bind. 0.0.0.0 is required for a physical phone on the same
+   * LAN to reach this API: binding to 127.0.0.1 makes the server reachable only
+   * from the PC, so every request from a device fails with a connection error.
+   */
+  host: process.env.HOST ?? '0.0.0.0',
   db: {
     host: process.env.DB_HOST ?? '127.0.0.1',
     port: Number(process.env.DB_PORT ?? 5432),
