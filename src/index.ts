@@ -4,6 +4,7 @@ import os from 'node:os';
 import { authRouter } from './auth/router';
 import { config } from './config';
 import { pool } from './db';
+import { classifyDbError } from './db/errors';
 
 const app = express();
 
@@ -66,15 +67,27 @@ app.use(express.json());
  * on the Path 1 / Path 2 decision in docs/ai/LISTING_SCREENER_AI_PLAN.md.
  */
 app.get('/health', async (_req, res) => {
+  // Config guard: refuse to connect if password is masked or empty
+  if (config.dbPasswordInvalid) {
+    return res.status(503).json({
+      status: 'error',
+      db: 'unavailable',
+    });
+  }
+
   try {
-    const result = await pool.query('SELECT current_database() AS db, current_user AS role');
+    await pool.query('SELECT 1');
     res.json({
       status: 'ok',
-      database: result.rows[0].db,
-      role: result.rows[0].role,
+      db: 'ok',
     });
   } catch (err) {
-    res.status(500).json({ status: 'error', message: (err as Error).message });
+    const classification = classifyDbError(err);
+    console.error(`[health] database check failed: ${classification.logReason}`);
+    res.status(503).json({
+      status: 'error',
+      db: 'unavailable',
+    });
   }
 });
 
@@ -117,7 +130,27 @@ function lanAddresses(): string[] {
   return found;
 }
 
-const server = app.listen(config.port, config.host, () => {
+/**
+ * Check database connectivity at startup.
+ * Logs clear status but does NOT exit on failure — keep the server running
+ * so /health is diagnosable.
+ */
+async function checkDatabaseConnection(): Promise<void> {
+  if (config.dbPasswordInvalid) {
+    console.error('database: UNAVAILABLE (DB_PASSWORD is empty or a placeholder mask)');
+    return;
+  }
+
+  try {
+    await pool.query('SELECT 1');
+    console.log('database: OK');
+  } catch (err) {
+    const classification = classifyDbError(err);
+    console.error(`database: UNREACHABLE (${classification.logReason})`);
+  }
+}
+
+const server = app.listen(config.port, config.host, async () => {
   console.log(`forgemind-backend listening on ${config.host}:${config.port} (${config.nodeEnv})`);
   if (config.corsOrigins.length > 0) {
     console.log(`CORS origins: ${config.corsOrigins.join(', ')} (plus private-LAN origins on Expo dev ports)`);
@@ -133,6 +166,9 @@ const server = app.listen(config.port, config.host, () => {
   console.log('  this PC:      http://localhost:' + config.port);
   console.log('  android emu:  http://10.0.2.2:' + config.port);
   console.log('  health:       GET /health');
+
+  // Check database after server starts
+  await checkDatabaseConnection();
 });
 
 const shutdown = async (): Promise<void> => {

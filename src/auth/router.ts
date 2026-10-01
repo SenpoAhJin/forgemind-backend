@@ -12,6 +12,7 @@
 import { NextFunction, Request, RequestHandler, Response, Router } from 'express';
 import { config } from '../config';
 import { query } from '../db';
+import { classifyDbError, generateRequestId } from '../db/errors';
 import { generateSessionToken, hashPassword, hashSessionToken, verifyPassword } from './crypto';
 import { PublicUser, USER_PUBLIC_COLUMNS } from './publicUser';
 import {
@@ -412,7 +413,22 @@ authRouter.patch(
 );
 
 authRouter.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  // Config guard: masked/empty password
+  if (config.dbPasswordInvalid) {
+    return res.status(503).json({
+      error: 'db_unavailable',
+      message: 'The server is running but cannot reach its database.',
+    });
+  }
+
+  const classification = classifyDbError(err);
+  const requestId = generateRequestId();
+
   // Log the message only. Never the request body — it carries a plaintext password.
-  console.error('[auth] unhandled error:', err.message);
-  res.status(500).json({ error: 'server_error', message: 'Something went wrong. Please try again.' });
+  console.error(`[auth] error [${requestId}]: ${classification.logReason} - ${err.message}`);
+
+  res.status(classification.httpStatus).json({
+    error: classification.errorCode,
+    message: classification.clientMessage,
+  });
 });

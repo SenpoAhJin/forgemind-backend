@@ -17,6 +17,23 @@ function required(name: string): string {
   return value;
 }
 
+/**
+ * Guard against placeholder/masked passwords in .env.
+ * Returns the value if valid, or null if it's a placeholder.
+ */
+function requiredPassword(name: string): string | null {
+  const value = process.env[name];
+  if (!value || value.trim() === '') {
+    console.error(`${name} is empty or missing. Set the real password in forgemind-backend/.env.`);
+    return null;
+  }
+  if (value === '****') {
+    console.error(`${name} is a placeholder mask (****). Set the real password in forgemind-backend/.env.`);
+    return null;
+  }
+  return value;
+}
+
 /** Comma-separated origin allowlist, e.g. "http://localhost:8081,http://localhost:19006". */
 function parseOrigins(raw: string | undefined): string[] {
   if (!raw) return [];
@@ -27,6 +44,8 @@ function parseOrigins(raw: string | undefined): string[] {
 }
 
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS ?? 30);
+
+const dbPassword = requiredPassword('DB_PASSWORD');
 
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
@@ -42,9 +61,14 @@ export const config = {
     port: Number(process.env.DB_PORT ?? 5432),
     database: required('DB_NAME'),
     user: required('DB_USER'),
-    password: required('DB_PASSWORD'),
+    password: dbPassword ?? '****', // Keep masked if invalid so pool creation doesn't throw
     ssl: process.env.DB_SSL === 'true',
   },
+  /**
+   * True if DB_PASSWORD is missing, empty, or a placeholder mask.
+   * When true, all database operations must fail with 503 db_unavailable.
+   */
+  dbPasswordInvalid: dbPassword === null,
   session: {
     ttlDays: SESSION_TTL_DAYS,
     ttlMs: SESSION_TTL_DAYS * 24 * 60 * 60 * 1000,
