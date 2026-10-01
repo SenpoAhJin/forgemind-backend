@@ -14,7 +14,14 @@ import { config } from '../config';
 import { query } from '../db';
 import { generateSessionToken, hashPassword, hashSessionToken, verifyPassword } from './crypto';
 import { PublicUser, USER_PUBLIC_COLUMNS } from './publicUser';
-import { validateLoginInput, validateRegisterInput } from './validation';
+import {
+  EMPTY_ORGANIZER_FIELDS,
+  OrganizerFields,
+  readOrganizerFields,
+  validateLoginInput,
+  validateOrganizerFields,
+  validateRegisterInput,
+} from './validation';
 
 export const authRouter = Router();
 
@@ -125,11 +132,21 @@ authRouter.post(
 
     const passwordHash = await hashPassword(input.password);
 
+    // organizer_role / head_organizer_department / department /
+    // department_verification_status are written here, on the INSERT, so a Head
+    // or Staff account exists with its role already in PostgreSQL. They were
+    // previously only ever recorded in the phone's local storage, which meant the
+    // role did not survive the login that immediately followed registration.
+    const organizer = input.organizer ?? EMPTY_ORGANIZER_FIELDS;
+
     let created: PublicUser[];
     try {
       created = await query<PublicUser>(
-        `INSERT INTO users (email, password_hash, display_name, is_cosplayer, is_organizer, base_body_selection)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO users (
+           email, password_hash, display_name, is_cosplayer, is_organizer, base_body_selection,
+           organizer_role, head_organizer_department, department, department_verification_status
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING ${USER_PUBLIC_COLUMNS}`,
         [
           input.email,
@@ -138,6 +155,10 @@ authRouter.post(
           input.is_cosplayer,
           input.is_organizer,
           input.base_body_selection,
+          organizer.organizer_role,
+          organizer.head_organizer_department,
+          organizer.department,
+          organizer.department_verification_status,
         ],
       );
     } catch (err) {
@@ -237,6 +258,156 @@ authRouter.post(
     }
 
     res.status(200).json({ success: true });
+  }),
+);
+
+/** Resolves a bearer token to the user it was issued to, or null. */
+async function resolveSession(
+  req: Request,
+): Promise<{ user_id: string; email: string; organizer_role: string | null } | null> {
+  const token = readBearerToken(req);
+  if (!token) return null;
+  const rows = await query<{
+    user_id: string;
+    email: string;
+    organizer_role: string | null;
+  }>(
+    `SELECT u.user_id, u.email, u.organizer_role
+       FROM sessions s
+       JOIN users u ON u.user_id = s.user_id
+      WHERE s.refresh_token_hash = $1 AND s.expires_at > NOW()`,
+    [hashSessionToken(token)],
+  );
+  return rows.length > 0 ? rows[0] : null;
+}
+
+/**
+ * PATCH /auth/organizer-fields
+ *
+ * Writes organizer_role, head_organizer_department, department and
+ * department_verification_status to PostgreSQL, so that a Head approving a Staff
+ * member (or a Staff member being created) is recorded by the server instead of
+ * only in one phone's local storage. Before this existed, every approval lived in
+ * AsyncStorage and was discarded by the next login, which re-read the user row.
+ *
+ * Authorization: only an account that is already a Head Organizer on the server
+ * may change organizer fields, and only on another account or its own. A caller
+ * can never grant itself a role, because the role is read from the caller's own
+ * row rather than from anything it sent.
+ */
+authRouter.patch(
+  '/organizer-fields',
+  asyncHandler(async (req, res) => {
+    const caller = await resolveSession(req);
+    if (!caller) {
+      res.status(401).json({
+        error: 'invalid_session',
+        message: 'Missing, unknown, or expired session',
+      });
+      return;
+    }
+
+    if (caller.organizer_role !== 'head') {
+      res.status(403).json({
+        error: 'forbidden',
+        message: 'Only a Head Organizer can change organizer roles or department access',
+      });
+      return;
+    }
+
+    const body = req.body as Record<string, unknown> | undefined;
+    const targetEmail =
+      typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
+    if (!targetEmail) {
+      res.status(400).json({ error: 'validation_error', message: 'email is required' });
+      return;
+    }
+
+    const patch = readOrganizerFields(body);
+    if (!patch) {
+      res.status(400).json({
+        error: 'validation_error',
+        message: 'No organizer fields supplied',
+      });
+      return;
+    }
+    if (!patch.ok) {
+      res.status(400).json({ error: 'validation_error', message: patch.message });
+      return;
+    }
+
+    const targets = await query<OrganizerFields>(
+      `SELECT organizer_role, head_organizer_department, department,
+              department_verification_status, department_rejection_reason
+         FROM users WHERE email = $1`,
+      [targetEmail],
+    );
+    if (targets.length === 0) {
+      res.status(404).json({ error: 'not_found', message: 'No such account' });
+      return;
+    }
+
+    // Validate against the row as it WOULD be, so a partial update cannot
+    // leave it violating chk_head_has_department / chk_staff_has_department.
+    //
+    // The merge tests key PRESENCE rather than nullishness: `readOrganizerFields`
+    // omits keys the caller did not send, but includes a key explicitly sent as
+    // null so the column can be cleared. Using `??` here would silently discard
+    // every explicit null and make clearing a field impossible.
+    const current = targets[0];
+    const wanted = patch.value;
+    const merged: OrganizerFields = {
+      organizer_role:
+        'organizer_role' in wanted ? wanted.organizer_role ?? null : current.organizer_role ?? null,
+      head_organizer_department:
+        'head_organizer_department' in wanted
+          ? wanted.head_organizer_department ?? null
+          : current.head_organizer_department ?? null,
+      department: 'department' in wanted ? wanted.department ?? null : current.department ?? null,
+      department_verification_status:
+        'department_verification_status' in wanted
+          ? wanted.department_verification_status ?? null
+          : current.department_verification_status ?? null,
+      department_rejection_reason: current.department_rejection_reason ?? null,
+    };
+
+    // The rejection reason is free text rather than a CHECK-constrained enum, so
+    // it is read separately. An empty string clears it.
+    if (typeof body?.department_rejection_reason === 'string') {
+      merged.department_rejection_reason = body.department_rejection_reason.trim() || null;
+    }
+
+    const checked = validateOrganizerFields(merged);
+    if (!checked.ok) {
+      res.status(400).json({
+        error: 'validation_error',
+        message: checked.message,
+        fields: checked.fields,
+      });
+      return;
+    }
+
+    const updated = await query<PublicUser>(
+      `UPDATE users
+          SET organizer_role = $1,
+              head_organizer_department = $2,
+              department = $3,
+              department_verification_status = $4,
+              department_rejection_reason = $5,
+              updated_at = NOW()
+        WHERE email = $6
+        RETURNING ${USER_PUBLIC_COLUMNS}`,
+      [
+        checked.value.organizer_role,
+        checked.value.head_organizer_department,
+        checked.value.department,
+        checked.value.department_verification_status,
+        checked.value.department_rejection_reason,
+        targetEmail,
+      ],
+    );
+
+    res.status(200).json({ user: updated[0] });
   }),
 );
 
