@@ -85,7 +85,7 @@ const LISTING_COLUMNS = `
   l.appeal_status, l.appeal_message, l.screener_version, l.removed_at,
   l.removed_reason, l.created_at, l.updated_at,
   pc.category_name,
-  COALESCE(NULLIF(BTRIM(u.seller_display_name), ''), NULLIF(BTRIM(u.display_name), ''),
+  COALESCE(NULLIF(BTRIM(u.display_name), ''), NULLIF(BTRIM(u.seller_display_name), ''),
            'Cosplayer') AS seller_name,
   (u.verification_status = 'verified') AS seller_verified
 `;
