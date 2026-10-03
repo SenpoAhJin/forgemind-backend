@@ -12,6 +12,8 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:moderation": "ts-node tests/moderation.test.ts",
+    "test:rules": "ts-node tests/marketplace-rules.test.ts",
     "migrate": "node scripts/migrate.mjs up",
     "migrate:up": "node scripts/migrate.mjs up",
     "migrate:down": "node scripts/migrate.mjs down",
