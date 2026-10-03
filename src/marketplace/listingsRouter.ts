@@ -112,11 +112,26 @@ function readId(req: Request, res: Response): string | null {
   return raw;
 }
 
-/** Logs the classification and answers 503 or 500. Never the request body. */
+/**
+ * Logs the classification and answers 503 or 500. Never the request body.
+ *
+ * Only the classification, the request id and, when PostgreSQL named one, the
+ * CONSTRAINT are logged. A raw driver message is never logged here: the DETAIL
+ * line of a CHECK violation repeats the whole row, and a row is a listing, so
+ * writing it to a log would put listing text in a place the screener exists to
+ * keep it out of.
+ */
 function failDb(res: Response, err: unknown, route: string): void {
   const classification = classifyDbError(err);
   const requestId = generateRequestId();
-  console.error(`[marketplace:${route}] error [${requestId}]: ${classification.logReason} - ${(err as Error).message}`);
+  const constraint = (err as { constraint?: unknown }).constraint;
+  const constraintSuffix =
+    typeof constraint === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(constraint)
+      ? ` constraint=${constraint}`
+      : '';
+  console.error(
+    `[marketplace:${route}] error [${requestId}]: ${classification.logReason}${constraintSuffix}`,
+  );
   res.status(classification.httpStatus).json({
     error: classification.errorCode,
     message: classification.clientMessage,
@@ -383,147 +398,152 @@ listingsRouter.post(
       return;
     }
 
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const categoryName = typeof body.category === 'string' ? body.category.trim() : '';
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const categoryName = typeof body.category === 'string' ? body.category.trim() : '';
 
-    // The category is resolved against permitted_categories, which is the same
-    // row the listings foreign key points at, so an unknown or deactivated
-    // category cannot be written.
-    const categories = await query<{ category_id: string }>(
-      'SELECT category_id FROM permitted_categories WHERE category_name = $1 AND is_active = true',
-      [categoryName],
-    );
-    if (categories.length === 0) {
-      res.status(400).json({
-        error: 'validation_error',
-        message: 'category is not a recognized marketplace category',
-        fields: { category: 'Choose a category from the list' },
-      });
-      return;
-    }
-
-    const parsed = parseListingInput(body, { category_id: categories[0].category_id });
-    if (!parsed.ok) {
-      res.status(400).json({
-        error: 'validation_error',
-        message: parsed.message,
-        fields: parsed.fields,
-      });
-      return;
-    }
-    const input = parsed.value;
-
-    // Category rules and role rules are two different mistakes, so they get two
-    // different answers: a post type the category cannot hold is a form problem
-    // (400), a post type this account's role does not cover is a permission
-    // problem (403).
-    if (!categoryAllowsPostType(input.category, input.post_type)) {
-      const permittedHere = postTypesForCategory(input.category);
-      res.status(400).json({
-        error: 'validation_error',
-        message: `${input.category} only accepts ${permittedHere.join(' and ')} posts`,
-        fields: { post_type: `Choose ${permittedHere.join(' or ')} for this category` },
-      });
-      return;
-    }
-
-    // Role comes from the users row, never from the body.
-    if (!roleAllowsPostType(caller, input.post_type)) {
-      res.status(403).json({
-        error: 'forbidden',
-        message: 'Your Marketplace role does not allow this kind of post',
-      });
-      return;
-    }
-
-    const verdict = await checkListingContent({
-      title: input.title,
-      description: input.description,
-      category: input.category,
-      trade_offered_item: input.trade_offered_item,
-      trade_wanted_item: input.trade_wanted_item,
-      deposit_note: input.deposit_note,
-    });
-
-    if (!verdict.allowed) {
-      const summary = violationSummary(verdict.violations);
-      console.warn(
-        `[marketplace] listing blocked user=${caller.user_id} fields=${summary.fields} codes=${summary.codes} screener=${verdict.screener_version}`,
+      // The category is resolved against permitted_categories, which is the same
+      // row the listings foreign key points at, so an unknown or deactivated
+      // category cannot be written.
+      const categories = await query<{ category_id: string }>(
+        'SELECT category_id FROM permitted_categories WHERE category_name = $1 AND is_active = true',
+        [categoryName],
       );
+      if (categories.length === 0) {
+        res.status(400).json({
+          error: 'validation_error',
+          message: 'category is not a recognized marketplace category',
+          fields: { category: 'Choose a category from the list' },
+        });
+        return;
+      }
+
+      const parsed = parseListingInput(body, { category_id: categories[0].category_id });
+      if (!parsed.ok) {
+        res.status(400).json({
+          error: 'validation_error',
+          message: parsed.message,
+          fields: parsed.fields,
+        });
+        return;
+      }
+      const input = parsed.value;
+
+      // Category rules and role rules are two different mistakes, so they get two
+      // different answers: a post type the category cannot hold is a form problem
+      // (400), a post type this account's role does not cover is a permission
+      // problem (403).
+      if (!categoryAllowsPostType(input.category, input.post_type)) {
+        const permittedHere = postTypesForCategory(input.category);
+        res.status(400).json({
+          error: 'validation_error',
+          message: `${input.category} only accepts ${permittedHere.join(' and ')} posts`,
+          fields: { post_type: `Choose ${permittedHere.join(' or ')} for this category` },
+        });
+        return;
+      }
+
+      // Role comes from the users row, never from the body.
+      if (!roleAllowsPostType(caller, input.post_type)) {
+        res.status(403).json({
+          error: 'forbidden',
+          message: 'Your Marketplace role does not allow this kind of post',
+        });
+        return;
+      }
+
+      const verdict = await checkListingContent({
+        title: input.title,
+        description: input.description,
+        category: input.category,
+        trade_offered_item: input.trade_offered_item,
+        trade_wanted_item: input.trade_wanted_item,
+        deposit_note: input.deposit_note,
+      });
+
+      if (!verdict.allowed) {
+        const summary = violationSummary(verdict.violations);
+        console.warn(
+          `[marketplace] listing blocked user=${caller.user_id} fields=${summary.fields} codes=${summary.codes} screener=${verdict.screener_version}`,
+        );
+      }
+
+      const blocked = !verdict.allowed;
+
+      // Two statements rather than INSERT ... RETURNING through a CTE: a
+      // data-modifying CTE and the main query share one snapshot, so the main
+      // query cannot see the row it just inserted. Write, then read it back.
+      const inserted = await query<{ listing_id: string }>(
+        `INSERT INTO listings (
+           seller_user_id, item_title, item_description, category_id,
+           transaction_type, price, condition, photo_urls,
+           screening_result, screening_reason, listing_status, appeal_status,
+           post_type, budget, rate, rental_fee, rental_period_days, deposit_note,
+           trade_offered_item, trade_wanted_item, trade_estimated_value,
+           request_deadline, handoff_method, open_to_trade, screener_version,
+           published_at, created_at, updated_at
+         ) VALUES (
+           $1,$2,$3,$4,$5,$6,$7,$8,
+           $9,$10,$11,'none',
+           $12,$13,$14,$15,$16,$17,
+           $18,$19,$20,
+           $21,$22,$23,$24,
+           $25::timestamptz,
+           NOW(), NOW()
+         )
+         RETURNING listing_id`,
+        [
+          caller.user_id,
+          input.title,
+          input.description,
+          input.category_id,
+          legacyTransactionType(input.post_type),
+          input.price,
+          input.condition,
+          JSON.stringify(input.photo_urls),
+          blocked ? 'blocked' : 'passed',
+          blocked ? BLOCKED_REASON : null,
+          blocked ? 'blocked' : 'active',
+          input.post_type,
+          input.budget,
+          input.rate,
+          input.rental_fee,
+          input.rental_period_days,
+          input.deposit_note,
+          input.trade_offered_item,
+          input.trade_wanted_item,
+          input.trade_estimated_value,
+          input.request_deadline,
+          input.handoff_method,
+          input.open_to_trade,
+          verdict.screener_version,
+          blocked ? null : new Date(),
+        ],
+      );
+
+      const created = await readListing(inserted[0]?.listing_id ?? null);
+      if (!created) {
+        failDb(res, new Error('listing insert returned no row'), 'create');
+        return;
+      }
+
+      res.status(201).json({
+        listing: toOwnerListing(created),
+        blocked,
+        screening_result: blocked ? 'blocked' : 'passed',
+        screening_reason: blocked ? BLOCKED_REASON : null,
+        // Owner-only, and already available from /marketplace/listings/check. Kept
+        // here so a client that skipped the pre-check can still tell the seller
+        // which field to reword.
+        violations: verdict.violations.map((violation) => ({
+          field: violation.field,
+          code: violation.code,
+          message: violation.message,
+        })),
+      });
+    } catch (err) {
+      failDb(res, err, 'create');
     }
-
-    const blocked = !verdict.allowed;
-
-    // Two statements rather than INSERT ... RETURNING through a CTE: a
-    // data-modifying CTE and the main query share one snapshot, so the main
-    // query cannot see the row it just inserted. Write, then read it back.
-    const inserted = await query<{ listing_id: string }>(
-      `INSERT INTO listings (
-         seller_user_id, item_title, item_description, category_id,
-         transaction_type, price, condition, photo_urls,
-         screening_result, screening_reason, listing_status, appeal_status,
-         post_type, budget, rate, rental_fee, rental_period_days, deposit_note,
-         trade_offered_item, trade_wanted_item, trade_estimated_value,
-         request_deadline, handoff_method, open_to_trade, screener_version,
-         published_at, created_at, updated_at
-       ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7,$8,
-         $9,$10,$11,'none',
-         $12,$13,$14,$15,$16,$17,
-         $18,$19,$20,
-         $21,$22,$23,$24,
-         CASE WHEN $11 = 'active' THEN NOW() ELSE NULL END,
-         NOW(), NOW()
-       )
-       RETURNING listing_id`,
-      [
-        caller.user_id,
-        input.title,
-        input.description,
-        input.category_id,
-        legacyTransactionType(input.post_type),
-        input.price,
-        input.condition,
-        JSON.stringify(input.photo_urls),
-        blocked ? 'blocked' : 'passed',
-        blocked ? BLOCKED_REASON : null,
-        blocked ? 'blocked' : 'active',
-        input.post_type,
-        input.budget,
-        input.rate,
-        input.rental_fee,
-        input.rental_period_days,
-        input.deposit_note,
-        input.trade_offered_item,
-        input.trade_wanted_item,
-        input.trade_estimated_value,
-        input.request_deadline,
-        input.handoff_method,
-        input.open_to_trade,
-        verdict.screener_version,
-      ],
-    );
-
-    const created = await readListing(inserted[0]?.listing_id ?? null);
-    if (!created) {
-      failDb(res, new Error('listing insert returned no row'), 'create');
-      return;
-    }
-
-    res.status(201).json({
-      listing: toOwnerListing(created),
-      blocked,
-      screening_result: blocked ? 'blocked' : 'passed',
-      screening_reason: blocked ? BLOCKED_REASON : null,
-      // Owner-only, and already available from /marketplace/listings/check. Kept
-      // here so a client that skipped the pre-check can still tell the seller
-      // which field to reword.
-      violations: verdict.violations.map((violation) => ({
-        field: violation.field,
-        code: violation.code,
-        message: violation.message,
-      })),
-    });
   }),
 );
 
