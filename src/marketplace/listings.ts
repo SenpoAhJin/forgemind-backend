@@ -224,7 +224,7 @@ export function parseListingInput(body: unknown, context: ParseContext): ParseRe
   const fields: Record<string, string> = {};
 
   const title = typeof body.title === 'string' ? body.title.trim() : '';
-  if (title.length < LIMITS_EXTRA.titleMin) fields.title = 'Enter a title';
+  if (title.length === 0) fields.title = 'Enter a title';
   else if (title.length > LIMITS.titleMax) fields.title = `At most ${LIMITS.titleMax} characters`;
 
   const description = typeof body.description === 'string' ? body.description.trim() : '';
