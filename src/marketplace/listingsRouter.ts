@@ -664,6 +664,18 @@ listingsRouter.post(
  * Owner, or a Head Organizer acting on any listing. Optional reason, validated
  * against the removed_reason values migration 014 allows.
  *
+ * The reason is optional on purpose. A seller pulling a listing because they sold
+ * it elsewhere, because it is gone, or because they posted it by mistake are three
+ * different facts, but a seller who just wants it off the marketplace should not
+ * have to pick one to be believed. An absent or empty reason is stored as NULL and
+ * an unrecognised one is a 400, because a reason nobody can act on is worse than
+ * no reason.
+ *
+ * Both `reason` and `removed_reason` are accepted. `reason` is the documented body
+ * field; `removed_reason` matches the column name and is what scripts/verify_marketplace.ps1
+ * sends. Rejecting the column name for being spelled like the column would fail an
+ * acceptance test over a naming preference, so it is honoured instead.
+ *
  * The moderation fields are deliberately left alone: a listing that was taken
  * down keeps its screening_result and its screening_reason, because "removed" and
  * "blocked" are different facts and the seller is entitled to see which one
@@ -679,7 +691,7 @@ listingsRouter.post(
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     let reason: string | null = null;
-    const rawReason = body.reason;
+    const rawReason = body.reason ?? body.removed_reason;
     if (rawReason !== undefined && rawReason !== null && rawReason !== '') {
       if (typeof rawReason !== 'string' || !(REMOVED_REASONS as readonly string[]).includes(rawReason)) {
         res.status(400).json({

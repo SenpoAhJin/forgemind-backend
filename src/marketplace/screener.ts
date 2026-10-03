@@ -27,8 +27,30 @@ import { moderateListing, type Violation } from '../moderation';
  * Bumped when the rule set changes in a way that could produce a different
  * verdict for the same listing. Stored on every row so a later rescreen can tell
  * which version judged it.
+ *
+ * Version 2 adds the generated term list from src/moderation/data. Measured on
+ * data/labeled_listings.jsonl with npx ts-node scripts/measure-screener.ts, on the
+ * language rules only and on the rows the term list was not selected from:
+ *
+ *              before    after
+ *   blocked caught    1596    1598
+ *   let through       1716    1714
+ *   wrongly blocked    582     582
+ *   precision       73.28%  73.30%
+ *   recall         48.19%  48.25%
+ *
+ * One more caught, none let through fewer, and not one extra innocent row blocked.
+ * The list is deliberately three terms long. Screening on all 6308 corpus entries
+ * was measured too: it caught 1020 more and wrongly blocked 16074 more, so almost
+ * the whole corpus is ordinary phrasing that happens to appear in blocked comments.
+ * The selection study is scripts/analyze-term-selection.ts and the rule that came
+ * out of it is in scripts/build-moderation-data.ts.
+ *
+ * An added list can only add blocks, so it cannot lower the wrongly-blocked count
+ * below what the curated rules already produce. Holding that count flat while
+ * catching more is the whole of what an additive list can honestly do here.
  */
-export const SCREENER_VERSION = 1;
+export const SCREENER_VERSION = 2;
 
 /**
  * The reason stored on a blocked row.
@@ -80,6 +102,21 @@ function mergeViolation(list: Violation[], violation: Violation): void {
  *   1. add `secondPass(fields) -> Promise<{allowed: boolean; reason?: string}>`
  *   2. run it after the rules pass, and block when either layer blocks
  *   3. keep the rules pass first: it is free, synchronous and deterministic
+ *
+ * MEASURED, NOT GUESSED
+ * A model has since been trained on the same labeled set to see whether a second
+ * layer is worth wiring up at all. Trained on 80 percent and scored on the held
+ * back 20 percent, scikit-learn TF-IDF plus logistic regression:
+ *
+ *   caught 2687, let through 630, wrongly blocked 987
+ *   precision 73.14%, recall 81.01% (blocked recall 81.01%, allowed recall 96.55%)
+ *
+ * For comparison the rules layer on the same held-out rows reaches recall 48.25%,
+ * so the model does catch materially more. It also wrongly blocks 987 innocent rows
+ * where the rules layer wrongly blocks 582, which is the trade a marketplace owner
+ * has to decide on and not a decision this file should make silently. The backend
+ * still does not load the model: see forgemind-ai/scripts/train_screener_classifier.py
+ * for the run and forgemind-ai/models/marketplace_screener_lr.joblib for the model.
  */
 async function aiSecondLayerNoop(_fields: ScreenedFields): Promise<{ allowed: boolean }> {
   return { allowed: true };
