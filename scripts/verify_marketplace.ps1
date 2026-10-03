@@ -191,7 +191,9 @@ Check 'blocked input 1 is stored as blocked (201)' ($blockedOne.ok -and $blocked
 Check 'blocked input 2 is stored as blocked (201)' ($blockedTwo.ok -and $blockedTwo.json.listing.status -eq 'blocked')
 Check 'blocked input 3 is stored as blocked (201)' ($blockedThree.ok -and $blockedThree.json.listing.status -eq 'blocked')
 $blockedIds = @($blockedOne.id, $blockedTwo.id, $blockedThree.id)
-$idList = ($blockedIds -join ',')
+# Quoted per id. A bare uuid starts with digits, so psql reads it as a numeric
+# literal and the whole IN list dies with "trailing junk after numeric literal".
+$idList = (($blockedIds | ForEach-Object { "'$_'" }) -join ',')
 $stored = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id IN ($idList)" 2>&1) -join ' '
 Check 'all three blocked inputs produced a stored row' ($stored.Trim() -eq '3')
 $dbBlocked = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id IN ($idList) AND screening_result = 'blocked' AND screening_reason IS NOT NULL" 2>&1) -join ' '
