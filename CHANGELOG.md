@@ -4,6 +4,9 @@ All notable changes to the ForgeMind backend API will be documented in this file
 
 ## [Unreleased]
 
+### Changed - 2026-10-04
+- **AI Setup** - forgemind-ai folder now has automated setup.ps1 script with pinned dependencies (Python 3.10+ required). Model compatibility verified with scikit-learn 1.9.1.
+
 ### Changed - 2026-10-03
 - **Marketplace: Three transaction types only** - Retired buy, rent, service_offer, service_request. Only sell, trade, and commission are now supported.
 - **Marketplace: Category expansion** - Added "Costumes & Cosplay" and "Props & Accessories" categories. Removed "Other" category from permitted options.
