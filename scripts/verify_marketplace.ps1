@@ -14,8 +14,13 @@ $MATERIAL_CATEGORY = 'Materials & Fabric'
 
 $script:pass = 0
 $script:fail = 0
+$script:fails = @()
 function Check($name, $condition) {
-  if ($condition) { $script:pass++; "PASS  $name" } else { $script:fail++; "FAIL  $name" }
+  # The check name is printed, never the value under test. A name is a field
+  # name, an endpoint and a status code, so nothing a seller wrote can reach
+  # the console through here.
+  if ($condition) { $script:pass++; "PASS  $name" }
+  else { $script:fail++; $script:fails += $name; "FAIL  $name" }
 }
 function Api($method, $path, $session, $body) {
   $headers = @{}
@@ -143,15 +148,38 @@ Check 'a passed listing carries no screening reason' ($mineActive.Count -eq 1 -a
 # --- 2. role and category rules ----------------------------------------
 $r = NewListing $buyerSession $valid 'buyerSellAttempt'
 Check 'buyer cannot create a sell listing (403)' (-not $r.ok -and $r.status -eq 403)
-$buyPayload = @{
-  post_type = 'buy'; title = 'Looking for a used cosplay wig in black'
-  description = 'Budget friendly, Metro Manila pickup preferred.'
-  budget = 400; category = $ITEM_CATEGORY; condition = 'good'
+
+# The four post types migration 016 retired. Each must be a 400, not a 403 and
+# not a 201: the caller is allowed to post, the value is simply gone.
+foreach ($retired in @('buy', 'rent', 'service_offer', 'service_request')) {
+  $retiredPayload = @{
+    post_type = $retired; title = 'Retired post type probe'
+    description = 'Checking a post type that no longer exists.'
+    price = 300; rate = 300; budget = 300; rental_fee = 300; rental_period_days = 2
+    category = $ITEM_CATEGORY; condition = 'good'
+  }
+  $r = NewListing $buyerSession $retiredPayload "retired_$retired"
+  Check "the retired post type $retired is rejected (400)" (-not $r.ok -and $r.status -eq 400)
 }
-$buyListing = NewListing $buyerSession $buyPayload 'buyListing'
-Check 'buyer can create a buy listing (201)' ($buyListing.ok)
-Check 'buyer /mine shows the buy listing' (@((Api 'GET' '/marketplace/listings/mine' $buyerSession).json.listings | Where-Object { $_.id -eq $buyListing.id }).Count -eq 1)
-$buyId = $buyListing.id
+
+# trade is the one type a buyer may post: a buyer trading something they already
+# own is legitimate.
+$tradePayload = @{
+  post_type = 'trade'; title = 'Trading a cosplay wig for a styled collar'
+  description = 'Unused black cosplay wig, looking for a detachable collar in return.'
+  trade_offered_item = 'Unused black cosplay wig'
+  trade_wanted_item = 'Detachable cosplay collar'
+  category = $ITEM_CATEGORY; condition = 'good'
+}
+$tradeListing = NewListing $buyerSession $tradePayload 'tradeListing'
+Check 'buyer can create a trade listing (201)' ($tradeListing.ok)
+Check 'buyer /mine shows the trade listing' (@((Api 'GET' '/marketplace/listings/mine' $buyerSession).json.listings | Where-Object { $_.id -eq $tradeListing.id }).Count -eq 1)
+$tradeId = $tradeListing.id
+
+$tradeNoWanted = $tradePayload.Clone()
+$tradeNoWanted.Remove('trade_wanted_item')
+$r = NewListing $sellerSession $tradeNoWanted 'tradeNoWanted'
+Check 'a trade with only one item is rejected (400)' (-not $r.ok -and $r.status -eq 400)
 
 $bad = $valid.Clone()
 $bad['price'] = 0
@@ -163,43 +191,116 @@ $bad['category'] = $SERVICE_CATEGORY
 $r = NewListing $sellerSession $bad 'wrongCategory'
 Check 'sell post in a service only category is rejected (400)' (-not $r.ok -and $r.status -eq 400)
 
-$service = @{
-  post_type = 'service_offer'; title = 'Wig styling, cutting and heat set service'
+$bad = $valid.Clone()
+$bad['post_type'] = 'trade'
+$r = NewListing $sellerSession $bad 'tradeInItemNoItems'
+Check 'a trade in an item category still needs both items (400)' (-not $r.ok -and $r.status -eq 400)
+
+# commission: the third type. Needs a rate, lives only in a service category, and
+# does not need a condition because nothing has been made yet.
+$commission = @{
+  post_type = 'commission'; title = 'Wig styling, cutting and heat set service'
   description = 'Styling and heat setting for cosplay wigs, same day service.'
-  rate = 250; category = $SERVICE_CATEGORY; condition = 'like_new'
+  rate = 250; category = $SERVICE_CATEGORY
 }
-$svcListing = NewListing $sellerSession $service 'svcListing'
-Check 'service_offer in a service category is accepted (201)' ($svcListing.ok)
+$svcListing = NewListing $sellerSession $commission 'commissionListing'
+Check 'commission in a service category is accepted (201)' ($svcListing.ok)
+if ($svcListing.ok) {
+  Check 'the stored commission kept its rate' ($svcListing.json.listing.rate -eq 250)
+  Check 'a commission with no condition got the server default' ($svcListing.json.listing.condition -eq 'good')
+}
+
+$commissionNoRate = $commission.Clone()
+$commissionNoRate.Remove('rate')
+$r = NewListing $sellerSession $commissionNoRate 'commissionNoRate'
+Check 'commission without a rate is rejected (400)' (-not $r.ok -and $r.status -eq 400)
+
+$commissionZeroRate = $commission.Clone()
+$commissionZeroRate['rate'] = 0
+$r = NewListing $sellerSession $commissionZeroRate 'commissionZeroRate'
+Check 'commission with rate 0 is rejected (400)' (-not $r.ok -and $r.status -eq 400)
+
+$commissionInItem = $commission.Clone()
+$commissionInItem['category'] = $ITEM_CATEGORY
+$r = NewListing $sellerSession $commissionInItem 'commissionInItemCategory'
+Check 'commission in an item category is rejected (400)' (-not $r.ok -and $r.status -eq 400)
+
+$r = NewListing $buyerSession $commission 'buyerCommission'
+Check 'buyer cannot create a commission (403)' (-not $r.ok -and $r.status -eq 403)
 
 # --- 3. server moderation stores blocked listings -----------------------
-$blockedOne = NewListing $sellerSession @{
-  post_type = 'sell'; title = 'Cosplay lab coat with beaker prop set'
-  description = 'Unused lab coat with beakers, for convention photos.'
-  price = 400; category = $MATERIAL_CATEGORY; condition = 'like_new'
-} 'blockedOne'
-$blockedTwo = NewListing $sellerSession @{
-  post_type = 'sell'; title = 'Replica tactical vest with straps and pouches'
-  description = 'Unused costume vest, worn only for a photoshoot.'
-  price = 900; category = $MATERIAL_CATEGORY; condition = 'new'
-} 'blockedTwo'
-$blockedThree = NewListing $sellerSession @{
-  post_type = 'sell'; title = 'Cosplay prop blade set with sheath for stage'
-  description = 'Foam blade and sheath, safe for conventions and stage use.'
-  price = 250; category = $MATERIAL_CATEGORY; condition = 'new'
-} 'blockedThree'
-Check 'blocked input 1 is stored as blocked (201)' ($blockedOne.ok -and $blockedOne.json.listing.status -eq 'blocked')
-Check 'blocked input 2 is stored as blocked (201)' ($blockedTwo.ok -and $blockedTwo.json.listing.status -eq 'blocked')
-Check 'blocked input 3 is stored as blocked (201)' ($blockedThree.ok -and $blockedThree.json.listing.status -eq 'blocked')
-$blockedIds = @($blockedOne.id, $blockedTwo.id, $blockedThree.id)
-# Quoted per id. A bare uuid starts with digits, so psql reads it as a numeric
-# literal and the whole IN list dies with "trailing junk after numeric literal".
-$idList = (($blockedIds | ForEach-Object { "'$_'" }) -join ',')
-$stored = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id IN ($idList)" 2>&1) -join ' '
-Check 'all three blocked inputs produced a stored row' ($stored.Trim() -eq '3')
-$dbBlocked = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id IN ($idList) AND screening_result = 'blocked' AND screening_reason IS NOT NULL" 2>&1) -join ' '
-Check 'all three are blocked in the database with a stored reason' ($dbBlocked.Trim() -eq '3')
-$dbNotBlocked = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id IN ($idList) AND listing_status = 'blocked'" 2>&1) -join ' '
-Check 'no blocked row is anything other than blocked' ($dbNotBlocked.Trim() -eq '3')
+# The three blocked inputs are read from the generated temp file at run time.
+# They are never echoed here and never written into this repository, so the
+# fixture stays the single copy of that text. Every probe sends condition
+# 'good', including the ones meant to be blocked, so a blocked result can only
+# come from the title and description and never from a missing field.
+$fixture = Join-Path $env:TEMP 'opencode\blocked_inputs.json'
+$blockedInputs = @()
+if (Test-Path -LiteralPath $fixture) {
+  $blockedInputs = @(((Get-Content -LiteralPath $fixture -Raw) | ConvertFrom-Json))
+}
+Check 'the blocked input fixture was found and holds 3 objects' ($blockedInputs.Count -eq 3)
+Check 'every fixture object has a title, a description and a category' (@($blockedInputs | Where-Object { -not $_.title -or -not $_.description -or -not $_.category }).Count -eq 0)
+Check 'every fixture object uses the Wigs category' (@($blockedInputs | Where-Object { $_.category -ne 'Wigs' }).Count -eq 0)
+
+$blockedOne = @{ ok = $false; id = $null; json = $null; status = 0 }
+$blockedTwo = $blockedOne
+$blockedThree = $blockedOne
+$blockedIds = @()
+if ($blockedInputs.Count -eq 3) {
+  for ($i = 0; $i -lt 3; $i++) {
+    $probe = NewListing $sellerSession @{
+      post_type = 'sell'; title = $blockedInputs[$i].title; description = $blockedInputs[$i].description
+      price = 500; category = $blockedInputs[$i].category; condition = 'good'
+    } "blockedInput$($i + 1)"
+    $held = $probe.ok -and $probe.json.listing.status -eq 'blocked' -and $probe.json.listing.screening_result -eq 'blocked'
+    Check "blocked input $($i + 1) is stored as blocked (201)" ($held)
+    if ($i -eq 0) { $blockedOne = $probe }
+    if ($i -eq 1) { $blockedTwo = $probe }
+    if ($i -eq 2) { $blockedThree = $probe }
+  }
+  $blockedIds = @($blockedOne.id, $blockedTwo.id, $blockedThree.id)
+  # Quoted per id. A bare uuid starts with digits, so psql reads it as a numeric
+  # literal and the whole IN list dies with "trailing junk after numeric literal".
+  $idList = (($blockedIds | ForEach-Object { "'$_'" }) -join ',')
+  $stored = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id IN ($idList)" 2>&1) -join ' '
+  Check 'all three blocked inputs produced a stored row' ($stored.Trim() -eq '3')
+  $dbBlocked = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id IN ($idList) AND screening_result = 'blocked' AND screening_reason IS NOT NULL" 2>&1) -join ' '
+  Check 'all three are blocked in the database with a stored reason' ($dbBlocked.Trim() -eq '3')
+  $dbNotBlocked = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id IN ($idList) AND listing_status = 'blocked'" 2>&1) -join ' '
+  Check 'no blocked row is anything other than blocked' ($dbNotBlocked.Trim() -eq '3')
+}
+
+# The other half of screening. Everything above proves the server can refuse
+# something; these three prove it can still pass ordinary cosplay stock, which
+# is the case a false positive would break. They reuse the blocked inputs'
+# category and condition so the only thing that differs is the wording.
+$harmless = @(
+  @{ label = 'sell'; title = 'Heat resistant white wig base'; description = 'Cosplay wig cap, unused, heat styling friendly.' }
+  @{ label = 'commission'; title = 'Wig styling and heat set'; description = 'Styling and heat setting for cosplay wigs, same day service.'; asCommission = $true }
+  @{ label = 'trade'; title = 'Trading a cosplay wig for a styled collar'; description = 'Unused black cosplay wig, looking for a detachable collar in return.'; asTrade = $true }
+)
+foreach ($h in $harmless) {
+  if ($h.asCommission) {
+    $payload = @{
+      post_type = 'commission'; title = $h.title; description = $h.description
+      rate = 250; category = $SERVICE_CATEGORY; condition = 'good'
+    }
+  } elseif ($h.asTrade) {
+    $payload = @{
+      post_type = 'trade'; title = $h.title; description = $h.description
+      trade_offered_item = 'Unused black cosplay wig'; trade_wanted_item = 'Detachable cosplay collar'
+      category = $ITEM_CATEGORY; condition = 'good'
+    }
+  } else {
+    $payload = @{
+      post_type = 'sell'; title = $h.title; description = $h.description
+      price = 350; category = $ITEM_CATEGORY; condition = 'good'
+    }
+  }
+  $r = NewListing $sellerSession $payload "harmless_$($h.label)"
+  Check "harmless cosplay listing is allowed ($($h.label))" ($r.ok -and $r.json.listing.status -eq 'active' -and $r.json.listing.screening_result -eq 'passed')
+}
 
 $feedB = Api 'GET' '/marketplace/listings?limit=50' $buyerSession
 Check 'B feed shows none of the blocked listings' (@($feedB.json.listings | Where-Object { $blockedIds -contains $_.id }).Count -eq 0)
@@ -250,13 +351,32 @@ Check 'an unknown removal reason is rejected (400)' ($r.status -eq 400)
 $r = Api 'POST' "/marketplace/listings/$($svcListing.id)/remove" $sellerSession @{}
 Check 'remove without a reason still works (200)' ($r.status -eq 200)
 
+# Removing a blocked listing is the case that used to be impossible: the owner
+# sees a listing held by screening and has no way to take it down, because the
+# route only accepted active rows. A withdrawn or unwanted item that got held
+# should be removable, and the appeal it may have filed must not survive.
+$blockedRemovable = $blockedOne
+$r = Api 'POST' "/marketplace/listings/$($blockedRemovable.id)/remove" $sellerSession @{ removed_reason = 'no_longer_available' }
+Check 'A can remove a blocked listing (200)' ($r.status -eq 200)
+$blockedRemoved = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id = '$($blockedRemovable.id)' AND listing_status = 'cancelled'" 2>&1) -join ' '
+Check 'the blocked listing is cancelled once removed' ($blockedRemoved.Trim() -eq '1')
+$mineAfterBlockedRemove = Api 'GET' '/marketplace/listings/mine' $sellerSession
+$stillThere = @($mineAfterBlockedRemove.json.listings | Where-Object { $_.id -eq $blockedRemovable.id })
+Check 'the removed blocked listing is still in A /mine' ($stillThere.Count -eq 1)
+Check 'the removed blocked listing reports the cancelled status' ($stillThere.Count -eq 1 -and $stillThere[0].status -eq 'cancelled')
+Check 'removing a blocked listing cleared its pending appeal' ($stillThere.Count -eq 1 -and $stillThere[0].appeal_status -eq 'none')
+$r = Api 'POST' "/marketplace/listings/$($blockedRemovable.id)/sold" $sellerSession @{}
+Check 'a cancelled listing cannot then be marked sold (409)' ($r.status -eq 409)
+$r = Api 'POST' "/marketplace/listings/$($blockedRemovable.id)/remove" $sellerSession @{ removed_reason = 'sold_elsewhere' }
+Check 'removing an already cancelled listing is refused (409)' ($r.status -eq 409)
+
 # --- 6. sold ------------------------------------------------------------
-# The buy listing belongs to B, so B is the one who marks it sold.
-$r = Api 'POST' "/marketplace/listings/$buyId/sold" $buyerSession @{}
-Check 'the owner can mark the buy listing sold (200)' ($r.status -eq 200)
-$sold = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id = '$buyId' AND listing_status = 'sold'" 2>&1) -join ' '
+# The trade listing belongs to B, so B is the one who marks it sold.
+$r = Api 'POST' "/marketplace/listings/$tradeId/sold" $buyerSession @{}
+Check 'the owner can mark the trade listing sold (200)' ($r.status -eq 200)
+$sold = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id = '$tradeId' AND listing_status = 'sold'" 2>&1) -join ' '
 Check 'sold listing is stored as sold' ($sold.Trim() -eq '1')
-$r = Api 'POST' "/marketplace/listings/$buyId/sold" $buyerSession @{}
+$r = Api 'POST' "/marketplace/listings/$tradeId/sold" $buyerSession @{}
 Check 'marking an already sold listing sold again is refused (409)' ($r.status -eq 409)
 $r = Api 'POST' "/marketplace/listings/$($svcListing.id)/sold" $sellerSession @{}
 Check 'sold on a cancelled listing is refused (409)' ($r.status -eq 409)
@@ -279,18 +399,66 @@ Check 'a malformed limit is 400' ($r.status -eq 400)
 $r = Api 'GET' '/marketplace/listings?limit=2' $sellerSession
 Check 'limit is honoured' (@($r.json.listings).Count -le 2)
 
-# --- 8. cleanup ---------------------------------------------------------
+# --- 8. permanent delete ------------------------------------------------
+# DELETE /marketplace/listings/:id works only for cancelled or blocked listings.
+# Create a test listing, remove it, then delete it.
+$deleteTest = NewListing $sellerSession @{
+  post_type = 'sell'; title = 'Listing for delete test'
+  description = 'Will be removed then deleted'
+  price = 50; category = $ITEM_CATEGORY; condition = 'good'
+} 'deleteTest'
+Check 'delete test listing created' ($deleteTest.ok)
+$deleteTestId = $deleteTest.id
+
+# Try to delete an active listing (409)
+$r = Api 'DELETE' "/marketplace/listings/$deleteTestId" $sellerSession
+Check 'deleting active listing refused (409)' ($r.status -eq 409)
+
+# Remove the listing first
+$r = Api 'POST' "/marketplace/listings/$deleteTestId/remove" $sellerSession @{ removed_reason = 'no_longer_available' }
+Check 'test listing removed' ($r.status -eq 200)
+
+# Non-owner cannot delete (403)
+$r = Api 'DELETE' "/marketplace/listings/$deleteTestId" $buyerSession
+Check 'non-owner delete refused (403)' ($r.status -eq 403)
+
+# Owner can delete removed listing (200)
+$r = Api 'DELETE' "/marketplace/listings/$deleteTestId" $sellerSession
+Check 'owner deleted removed listing (200)' ($r.status -eq 200)
+
+# Verify listing is gone from database
+$deletedCheck = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id = '$deleteTestId'" 2>&1) -join ' '
+Check 'deleted listing removed from database' ($deletedCheck.Trim() -eq '0')
+
+# Try to delete unknown listing (404)
+$r = Api 'DELETE' "/marketplace/listings/00000000-0000-0000-0000-000000000000" $sellerSession
+Check 'deleting unknown listing returns 404' ($r.status -eq 404)
+
+# Create a blocked listing and test deleting it
+if ($blockedOne.ok -and $blockedOne.id) {
+  $r = Api 'DELETE' "/marketplace/listings/$($blockedOne.id)" $sellerSession
+  Check 'owner deleted blocked listing (200)' ($r.status -eq 200)
+  $blockedDelCheck = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id = '$($blockedOne.id)'" 2>&1) -join ' '
+  Check 'deleted blocked listing removed from database' ($blockedDelCheck.Trim() -eq '0')
+}
+
+# --- 9. cleanup ---------------------------------------------------------
 # A listing that is already sold can be deleted outright. Every other status is
 # cancelled first so the delete has no state left to disagree with.
 (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "UPDATE listings SET listing_status = 'cancelled', removed_reason = 'test_cleanup' WHERE seller_user_id IN (SELECT user_id FROM users WHERE email IN ('$sellerEmail','$buyerEmail')) AND listing_status <> 'cancelled'" 2>&1) -join ' ' | Out-Null
 (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "DELETE FROM listings WHERE seller_user_id IN (SELECT user_id FROM users WHERE email IN ('$sellerEmail','$buyerEmail'))" 2>&1) -join ' ' | Out-Null
 (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "DELETE FROM users WHERE email IN ('$sellerEmail','$buyerEmail')" 2>&1) -join ' ' | Out-Null
-$leftListings = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id IN ($idList, '$activeId', '$buyId', '$($svcListing.id)', '$($removable.id)', '$($inject.id)')" 2>&1) -join ' '
+$allTestIds = @($idList, "'$activeId'", "'$tradeId'", "'$($svcListing.id)'", "'$($removable.id)'", "'$($inject.id)'") -join ','
+$leftListings = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings WHERE listing_id IN ($allTestIds)" 2>&1) -join ' '
 Check 'every test listing was deleted' ($leftListings.Trim() -eq '0')
 $leftUsers = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM users WHERE email IN ('$sellerEmail','$buyerEmail')" 2>&1) -join ' '
 Check 'both test accounts were deleted' ($leftUsers.Trim() -eq '0')
 $seedLeft = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM listings" 2>&1) -join ' '
 Check 'the seeded 6 listings are still present' ($seedLeft.Trim() -eq '6')
+$seedTypes = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(DISTINCT post_type) FROM listings" 2>&1) -join ' '
+Check 'the seeded listings span more than one post type' ([int]$seedTypes.Trim() -ge 2)
+$staleTestUsers = (& psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -t -A -c "SELECT count(*) FROM users WHERE email LIKE '%@forge.test'" 2>&1) -join ' '
+Check 'no test account was left behind' ($staleTestUsers.Trim() -eq '0')
 
-"created_ids=$activeId,$buyId,$($svcListing.id)"
 "summary pass=$script:pass fail=$script:fail"
+if ($script:fail -gt 0) { "failed: $(($script:fails -join ', '))" }
