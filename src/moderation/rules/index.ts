@@ -27,5 +27,4 @@ export const PERMITTED_CATEGORY_SLUGS: readonly string[] = [
   'Makeup & Contacts',
   'Photography Services',
   'Commissions & Crafting Services',
-  'Other',
 ];
