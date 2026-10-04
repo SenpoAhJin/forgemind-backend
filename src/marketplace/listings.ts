@@ -12,10 +12,24 @@
  */
 
 import { LIMITS } from '../moderation';
-import type { PostType } from './rules';
+import { POST_TYPES, REMOVED_POST_TYPES, type PostType } from './rules';
 
 export const CONDITIONS = ['new', 'like_new', 'good', 'fair', 'well_loved'] as const;
 export type Condition = (typeof CONDITIONS)[number];
+
+/**
+ * The condition a commission is given when the client sends none.
+ *
+ * A commission is work, and work has no condition: nothing has been made yet, so
+ * "new" would be a claim about a state that does not exist and "well_loved"
+ * would be nonsense. But the column is NOT NULL with no default, and a phone
+ * that does not render a condition picker for commissions should not have to
+ * know that. So the server picks the neutral middle value instead of rejecting
+ * the request over a field the product does not ask for. src/marketplace/
+ * rules.ts owns the rule that only service categories take commissions; this is
+ * only the storage default.
+ */
+export const DEFAULT_COMMISSION_CONDITION: Condition = 'good';
 
 export const HANDOFF_METHODS = ['meetup', 'courier', 'either'] as const;
 export type HandoffMethod = (typeof HANDOFF_METHODS)[number];
@@ -69,11 +83,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** The three listing types, re-stated here so a body cannot smuggle in a fourth. */
+const CURRENT_POST_TYPES: readonly string[] = ['sell', 'trade', 'commission'];
+
+/**
+ * True when the value is one of the three current post types.
+ *
+ * A value from the old six-value model is not "unknown", it is specifically
+ * retired, and parseListingInput answers it differently so the caller is told
+ * what to stop sending.
+ */
 export function isPostType(value: unknown): value is PostType {
-  return (
-    typeof value === 'string' &&
-    ['sell', 'buy', 'trade', 'rent', 'service_offer', 'service_request'].includes(value)
-  );
+  return typeof value === 'string' && CURRENT_POST_TYPES.includes(value);
+}
+
+/** True for a post type that used to exist and no longer does. */
+export function isRemovedPostType(value: unknown): boolean {
+  return typeof value === 'string' && REMOVED_POST_TYPES.includes(value);
 }
 
 function optionalString(
@@ -165,30 +191,33 @@ function parseDeadline(raw: unknown): { value: string | null; error?: string } {
  * The column is kept so older reads keep working, and its own CHECK is still in
  * force, so the value has to come from ('buy', 'trade', 'both'). 'buy' is the
  * legacy word for "a priced listing other people buy", which is what sell is.
- * Trade is its own value. The service and want posts have no legacy equivalent,
- * so they take 'both', the legacy bucket for "not a plain priced sale".
+ * Trade is its own value. A commission has no legacy equivalent, so it takes
+ * 'both', the legacy bucket for "not a plain priced sale".
  */
 export function legacyTransactionType(postType: PostType): 'buy' | 'trade' | 'both' {
-  if (postType === 'sell' || postType === 'buy') return 'buy';
   if (postType === 'trade') return 'trade';
+  if (postType === 'sell') return 'buy';
   return 'both';
 }
 
 /**
  * Per-post-type money requirements, re-stated here on purpose.
  *
- * These duplicate the migration 014 CHECK constraints deliberately: the database
+ * These duplicate the migration 016 CHECK constraints deliberately: the database
  * is the last line of defence, but a constraint violation surfaces as a raw
  * PostgreSQL error, which would be mapped to a 500. Rejecting the request here
  * means the caller gets a 400 that names the field.
+ *
+ *   sell        price > 0
+ *   commission  rate > 0, the starting rate
+ *   trade       no money field at all, it has two items
+ *
+ * A trade's estimated value is parsed but never required, so a swap can be listed
+ * before either side agrees on what it is worth.
  */
 const MONEY_RULES: Record<PostType, { required: keyof ListingInput | null; message: string }> = {
   sell: { required: 'price', message: 'A price is required for a sell post' },
-  buy: { required: 'budget', message: 'A budget is required for a buy post' },
-  service_offer: { required: 'rate', message: 'A rate is required for a service offer' },
-  service_request: { required: 'budget', message: 'A budget is required for a service request' },
-  rent: { required: 'rental_fee', message: 'A rental fee is required for a rent post' },
-  // A trade has no money field at all: it has two items.
+  commission: { required: 'rate', message: 'A starting rate is required for a commission' },
   trade: { required: null, message: 'A trade post needs both items' },
 };
 
@@ -236,17 +265,42 @@ export function parseListingInput(body: unknown, context: ParseContext): ParseRe
   const category = typeof body.category === 'string' ? body.category.trim() : '';
   if (category === '') fields.category = 'Choose a category';
 
-  if (!isPostType(body.post_type)) {
-    fields.post_type = 'Choose what kind of post this is';
+  const postTypeRaw = body.post_type;
+  if (isRemovedPostType(postTypeRaw)) {
+    // Named explicitly rather than folded into "choose what kind of post this is",
+    // because the phone still offers these four and a caller reading a 400 has to
+    // be able to tell "you sent a retired value" from "you sent nonsense".
+    return {
+      ok: false,
+      message: 'That listing type no longer exists',
+      fields: {
+        post_type: `The marketplace has three types: ${POST_TYPES.join(', ')}. "${String(postTypeRaw)}" was removed.`,
+      },
+    };
+  }
+  if (!isPostType(postTypeRaw)) {
+    fields.post_type = 'Choose sell, trade or commission';
     return { ok: false, message: 'One or more fields are invalid', fields };
   }
-  const postType: PostType = body.post_type;
+  const postType: PostType = postTypeRaw;
 
-  const conditionRaw = typeof body.condition === 'string' ? body.condition : '';
-  const condition = (CONDITIONS as readonly string[]).includes(conditionRaw)
+  const conditionRaw = typeof body.condition === 'string' ? body.condition.trim() : '';
+  let condition: Condition | null = (CONDITIONS as readonly string[]).includes(conditionRaw)
     ? (conditionRaw as Condition)
     : null;
-  if (condition === null) fields.condition = 'Choose a condition';
+  if (condition === null) {
+    // A commission is work that has not been done yet, so the product has no
+    // condition to ask for. Absent means the storage default rather than an
+    // error, because a phone with no condition picker on its commission form
+    // should not have to know the column is NOT NULL. A condition that WAS sent
+    // and is not a real value is still a mistake, and says so.
+    const absent = body.condition === undefined || body.condition === null || conditionRaw === '';
+    if (postType === 'commission' && absent) {
+      condition = DEFAULT_COMMISSION_CONDITION;
+    } else {
+      fields.condition = 'Choose a condition';
+    }
+  }
 
   // The one required money field for this post type, if it has one.
   const moneyRule = MONEY_RULES[postType];
@@ -303,7 +357,7 @@ export function parseListingInput(body: unknown, context: ParseContext): ParseRe
     return { ok: false, message: 'One or more fields are invalid', fields };
   }
 
-  // price is NOT NULL in the schema, so a post whose money field is something
+  // price is NOT NULL in the schema, so a type whose money field is something
   // else stores 0 there. listings_post_type_money is what enforces the rule that
   // actually matters.
   const price = postType === 'sell' ? requiredValue : 0;
@@ -317,9 +371,12 @@ export function parseListingInput(body: unknown, context: ParseContext): ParseRe
       category_id: context.category_id,
       post_type: postType,
       price,
-      budget: postType === 'buy' || postType === 'service_request' ? requiredValue : budget.value,
-      rate: postType === 'service_offer' ? requiredValue : rate.value,
-      rental_fee: postType === 'rent' ? requiredValue : rentalFee.value,
+      // budget and rental_fee belong to the retired types. They are still parsed
+      // so a stale client sending one gets a validation error naming the field
+      // rather than having it silently dropped, but they are never stored.
+      budget: budget.value,
+      rate: postType === 'commission' ? requiredValue : rate.value,
+      rental_fee: rentalFee.value,
       rental_period_days: period.value,
       deposit_note: deposit.value,
       trade_offered_item: offered.value,

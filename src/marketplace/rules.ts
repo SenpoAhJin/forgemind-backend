@@ -22,18 +22,34 @@ import { requireSession, type SessionUser } from '../auth/session';
 
 export type MarketplaceRole = 'buyer' | 'seller' | 'both' | null;
 
-export type PostType =
-  | 'sell'
-  | 'buy'
-  | 'trade'
-  | 'rent'
-  | 'service_offer'
-  | 'service_request';
+/**
+ * The three listing types the marketplace has.
+ *
+ * Was six values (sell, buy, trade, rent, service_offer, service_request). Four
+ * of them could not be used by a real seller: "buy" asked the market for
+ * something the app cannot fulfil, "rent" needed a period and deposit note no
+ * screen collected, and splitting a commission into offer and request made a
+ * commission depend on which category the maker happened to sit in.
+ *
+ * 'commission' is the new name for service_offer. It is a single type because
+ * there was never a real difference between offering work and requesting it that
+ * survived contact with the category rules.
+ */
+export type PostType = 'sell' | 'trade' | 'commission';
 
-export const POST_TYPES: readonly PostType[] = [
-  'sell',
+export const POST_TYPES: readonly PostType[] = ['sell', 'trade', 'commission'];
+
+/**
+ * The post types migration 014 used to allow, kept only so the server can name
+ * them in a rejection.
+ *
+ * A request carrying one of these gets a 400 that says the type no longer
+ * exists, rather than a generic "invalid post type", because the phone still has
+ * screens that offer them and a developer looking at a 400 needs to know which
+ * value to stop sending.
+ */
+export const REMOVED_POST_TYPES: readonly string[] = [
   'buy',
-  'trade',
   'rent',
   'service_offer',
   'service_request',
@@ -42,23 +58,34 @@ export const POST_TYPES: readonly PostType[] = [
 /** The verified state a user must be in to read or write marketplace listings. */
 export const VERIFIED_STATUS = 'verified';
 
-/** Categories that can only carry service posts. */
+/** Categories that can only carry commission posts. */
 export const SERVICE_ONLY_CATEGORIES: readonly string[] = [
   'Commissions & Crafting Services',
   'Photography Services',
 ];
 
 /** Post types a service-only category accepts. */
-const SERVICE_POST_TYPES: readonly PostType[] = ['service_offer', 'service_request'];
+const SERVICE_POST_TYPES: readonly PostType[] = ['commission'];
 
 /** Post types an item category accepts. */
-const ITEM_POST_TYPES: readonly PostType[] = ['sell', 'buy', 'trade', 'rent'];
+const ITEM_POST_TYPES: readonly PostType[] = ['sell', 'trade'];
 
-/** Posts that put money in the seller's hand: seller or both. */
-const SELLER_POST_TYPES: readonly PostType[] = ['sell', 'rent', 'service_offer'];
+/**
+ * Posts that put money in the maker's hand: seller or both.
+ *
+ * A commission is in this group, not because a commission is a sale, but because
+ * it is paid work: someone is being hired, and being hired is a seller action.
+ */
+const SELLER_POST_TYPES: readonly PostType[] = ['sell', 'commission'];
 
-/** Posts that ask the market for something: buyer or both. */
-const BUYER_POST_TYPES: readonly PostType[] = ['buy', 'service_request'];
+/**
+ * Posts that need no seller role at all: trade.
+ *
+ * A trade is open to any verified role. A seller trading stock and a buyer
+ * trading something they already own are both legitimate, and the rule that
+ * needs protecting is "verified", not "a seller".
+ */
+const OPEN_POST_TYPES: readonly PostType[] = ['trade'];
 
 export interface MarketplaceCaller extends SessionUser {
   marketplace_role: MarketplaceRole;
@@ -144,9 +171,10 @@ export function isVerifiedMarketplaceUser(caller: {
 /**
  * True when the account is allowed to create this post type.
  *
- * A trade is open to any verified role: a seller trading stock and a buyer
- * trading something they already own are both legitimate, and the rule that
- * needs protecting is "verified", not "a seller".
+ * sell and commission need seller or both: both are paid work, so both are a
+ * seller action. trade needs any verified role, because a buyer trading
+ * something they already own is legitimate and the rule worth protecting is
+ * "verified", not "a seller".
  */
 export function roleAllowsPostType(
   caller: { verification_status: string; marketplace_role: MarketplaceRole },
@@ -156,9 +184,8 @@ export function roleAllowsPostType(
   const role = caller.marketplace_role;
   if (role === null) return false;
 
-  if (postType === 'trade') return role === 'buyer' || role === 'seller' || role === 'both';
+  if (OPEN_POST_TYPES.includes(postType)) return role === 'buyer' || role === 'seller' || role === 'both';
   if (SELLER_POST_TYPES.includes(postType)) return role === 'seller' || role === 'both';
-  if (BUYER_POST_TYPES.includes(postType)) return role === 'buyer' || role === 'both';
   return false;
 }
 
@@ -170,7 +197,7 @@ export function postTypesForCategory(category: string): readonly PostType[] {
 /**
  * True when the post type is meaningful for the category.
  *
- * A service post in "Wigs" would be nonsense, and a wig for sale in
+ * A commission in "Wigs" would be nonsense, and a wig for sale in
  * "Commissions & Crafting Services" is a miscategorised listing that the
  * relevance rule then has to guess about.
  */
