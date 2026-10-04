@@ -658,11 +658,30 @@ listingsRouter.post(
   }),
 );
 
+/** Statuses a listing can be pulled from. Anything else is already finished. */
+const REMOVABLE_STATUSES: readonly string[] = ['active', 'blocked'];
+
 /**
  * POST /marketplace/listings/:id/remove
  *
  * Owner, or a Head Organizer acting on any listing. Optional reason, validated
  * against the removed_reason values migration 014 allows.
+ *
+ * WORKS FROM 'blocked' AS WELL AS 'active'
+ * A blocked listing is a listing the seller can see in their own /mine and can
+ * appeal. If they appeal and then change their mind, or they would rather just
+ * take it down than wait for a decision, refusing to let them remove it strands
+ * them: the only way out of a block becomes winning the appeal. So 'active' and
+ * 'blocked' are both removable, and 'cancelled' and 'sold' are not, because those
+ * are finished and re-removing them would rewrite history.
+ *
+ * A PENDING APPEAL IS CLEARED
+ * If the listing had an appeal waiting for a Head, removing the listing cancels
+ * that appeal. Leaving it pending would put a decision request against a listing
+ * nobody can act on any more, and the Head reviewing it would be reviewing
+ * something the seller already took back. Only a pending appeal is touched; an
+ * appeal that was already decided keeps its outcome, because that decision is a
+ * record and not a to-do item.
  *
  * The reason is optional on purpose. A seller pulling a listing because they sold
  * it elsewhere, because it is gone, or because they posted it by mistake are three
@@ -708,10 +727,10 @@ listingsRouter.post(
       const existing = await loadAuthorisedListing(id, caller, res, { allowHead: true });
       if (!existing) return;
 
-      if (existing.listing_status !== 'active') {
+      if (!REMOVABLE_STATUSES.includes(existing.listing_status)) {
         res.status(409).json({
           error: 'listing_state',
-          message: 'Only an active listing can be removed',
+          message: 'Only an active or blocked listing can be removed',
         });
         return;
       }
@@ -721,15 +740,19 @@ listingsRouter.post(
             SET listing_status = 'cancelled',
                 removed_at = NOW(),
                 removed_reason = $2,
+                appeal_status = CASE
+                  WHEN appeal_status = 'pending' THEN 'none'
+                  ELSE appeal_status
+                END,
                 updated_at = NOW()
-          WHERE listing_id = $1 AND listing_status = 'active'
+          WHERE listing_id = $1 AND listing_status = ANY($3::varchar[])
           RETURNING listing_id`,
-        [id, reason],
+        [id, reason, REMOVABLE_STATUSES as string[]],
       );
       if (updated.length === 0) {
         res.status(409).json({
           error: 'listing_state',
-          message: 'Only an active listing can be removed',
+          message: 'Only an active or blocked listing can be removed',
         });
         return;
       }
@@ -813,6 +836,57 @@ listingsRouter.post(
       sendListing(res, await readListing(id), 'appeal');
     } catch (err) {
       failDb(res, err, 'appeal');
+    }
+  }),
+);
+
+/**
+ * DELETE /marketplace/listings/:id
+ *
+ * Permanently delete a listing (owner only).
+ *
+ * Only works for listings in 'cancelled' or 'blocked' status. An 'active' or
+ * 'sold' listing must be removed first (POST /remove), then deleted.
+ * Non-owner gets 403, active/sold listing gets 409, unknown id gets 404.
+ */
+listingsRouter.delete(
+  '/listings/:id',
+  asyncHandler(async (req, res) => {
+    const caller = await requireMarketplaceUser(req, res);
+    if (!caller) return;
+    const id = readId(req, res);
+    if (!id) return;
+
+    try {
+      const existing = await loadAuthorisedListing(id, caller, res);
+      if (!existing) return;
+
+      // Only cancelled or blocked listings can be permanently deleted
+      if (existing.listing_status !== 'cancelled' && existing.listing_status !== 'blocked') {
+        res.status(409).json({
+          error: 'invalid_status',
+          message: 'Only removed or blocked listings can be permanently deleted. Remove an active listing first.',
+        });
+        return;
+      }
+
+      // Delete the listing
+      const deleted = await query<{ listing_id: string }>(
+        `DELETE FROM listings
+          WHERE listing_id = $1
+            AND seller_user_id = $2
+          RETURNING listing_id`,
+        [id, caller.user_id],
+      );
+
+      if (deleted.length === 0) {
+        res.status(404).json({ error: 'not_found', message: 'Listing not found' });
+        return;
+      }
+
+      res.status(200).json({ message: 'Listing permanently deleted' });
+    } catch (err) {
+      failDb(res, err, 'delete');
     }
   }),
 );
