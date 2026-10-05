@@ -450,8 +450,18 @@ function dateOnly(value: Date | string | null): string | null {
  * a block, it can describe exactly which rule fired, and another user's block
  * reason is none of this caller's business. The owner reads it from
  * /listings/mine, where it belongs.
+ *
+ * `seller_email` is absent for the same reason and for a stricter one: another
+ * user's email address is never sent to a client. What a client does get is
+ * `seller_user_id` (the id, for matching) and `seller_name` (the name the
+ * seller chose at registration, for display), plus `is_owner`, which is the
+ * only trustworthy answer to "is this my own listing". The client must not
+ * derive ownership by comparing addresses.
  */
-export function toPublicListing(row: ListingRow): Record<string, unknown> {
+export function toPublicListing(
+  row: ListingRow,
+  callerUserId?: string | null,
+): Record<string, unknown> {
   return {
     id: row.listing_id,
     title: row.item_title,
@@ -475,8 +485,10 @@ export function toPublicListing(row: ListingRow): Record<string, unknown> {
     photos: row.photo_urls ?? [],
     status: row.listing_status,
     screening_result: row.screening_result,
+    seller_user_id: row.seller_user_id,
     seller_name: row.seller_name,
     seller_verified: row.seller_verified,
+    is_owner: callerUserId != null && row.seller_user_id === callerUserId,
     created_at: iso(row.created_at),
     updated_at: iso(row.updated_at),
   };
@@ -485,10 +497,11 @@ export function toPublicListing(row: ListingRow): Record<string, unknown> {
 /**
  * The owner shape of a listing: the public fields plus the moderation and appeal
  * state, which only the owner (and a Head, through the users router) may read.
+ * Every row here belongs to the caller, so is_owner is always true.
  */
 export function toOwnerListing(row: ListingRow): Record<string, unknown> {
   return {
-    ...toPublicListing(row),
+    ...toPublicListing(row, row.seller_user_id),
     screening_reason: row.screening_reason,
     appeal_status: row.appeal_status,
     appeal_message: row.appeal_message,

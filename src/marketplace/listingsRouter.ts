@@ -313,7 +313,7 @@ listingsRouter.get(
 
       const last = rows[rows.length - 1];
       res.status(200).json({
-        listings: rows.map(toPublicListing),
+        listings: rows.map(row => toPublicListing(row, caller.user_id)),
         count: rows.length,
         limit,
         next_cursor: rows.length === limit && last ? encodeCursor(last) : null,

@@ -138,12 +138,32 @@ $seeded = @($feed.json.listings | Where-Object { $_.id -ne $activeId }).Count
 Check 'B feed carries the seeded 6 listings too' ($seeded -eq 6)
 Check 'B feed never exposes a screening_reason field' (@($feed.json.listings | Where-Object { $_.PSObject.Properties.Name -contains 'screening_reason' }).Count -eq 0)
 Check 'B feed never exposes a seller email field' (@($feed.json.listings | Where-Object { $_.PSObject.Properties.Name -contains 'seller_email' }).Count -eq 0)
+# Seller identity travels as an id and a name, never as an address, and
+# ownership is answered by the server instead of by the client comparing
+# addresses. Without these three fields a client cannot name the seller or tell
+# its own listing apart, which is what broke the listing detail screen.
+Check 'the feed names the seller with seller_user_id' (@($feed.json.listings | Where-Object { -not ($_.PSObject.Properties.Name -contains 'seller_user_id') }).Count -eq 0)
+Check 'the feed names the seller with seller_name' (@($feed.json.listings | Where-Object { -not ($_.PSObject.Properties.Name -contains 'seller_name') }).Count -eq 0)
+Check 'the feed answers ownership with is_owner' (@($feed.json.listings | Where-Object { -not ($_.PSObject.Properties.Name -contains 'is_owner') }).Count -eq 0)
+Check 'the feed seller id is a non-empty string' (@($feed.json.listings | Where-Object { $_.seller_user_id -isnot [string] -or $_.seller_user_id -eq '' }).Count -eq 0)
+Check 'another user listing is never owned by the reader' (@($feed.json.listings | Where-Object { $_.is_owner -eq $true }).Count -eq 0)
+Check 'the feed is_owner is a boolean' (@($feed.json.listings | Where-Object { $_.is_owner -isnot [bool] }).Count -eq 0)
 
 $mineA = Api 'GET' '/marketplace/listings/mine' $sellerSession
 $mineActive = @($mineA.json.listings | Where-Object { $_.id -eq $activeId })
 Check 'A /mine shows the listing' ($mineA.status -eq 200 -and $mineActive.Count -eq 1)
 Check 'A /mine exposes the appeal fields for the owner' ($mineActive.Count -eq 1 -and $mineActive[0].PSObject.Properties.Name -contains 'appeal_status')
 Check 'a passed listing carries no screening reason' ($mineActive.Count -eq 1 -and $null -eq $mineActive[0].screening_reason)
+Check 'the owner listing reports is_owner true' ($mineActive.Count -eq 1 -and $mineActive[0].is_owner -eq $true)
+Check 'A /mine never exposes a seller email field' (@($mineA.json.listings | Where-Object { $_.PSObject.Properties.Name -contains 'seller_email' }).Count -eq 0)
+
+# The owner listing seen by its own seller, and the same listing seen by
+# another user, must disagree about is_owner. If they ever agree, the flag is
+# not per-caller and every ownership decision in the app is wrong.
+$mineB = Api 'GET' '/marketplace/listings/mine' $buyerSession
+$bOwnRow = @($mineB.json.listings | Where-Object { $_.id -eq $activeId })
+Check 'the other account does not own the listing' ($bOwnRow.Count -eq 0)
+Check 'the other account feed marks the listing as not owned' (@($feed.json.listings | Where-Object { $_.id -eq $activeId -and $_.is_owner -eq $false }).Count -eq 1)
 
 # --- 2. role and category rules ----------------------------------------
 $r = NewListing $buyerSession $valid 'buyerSellAttempt'
