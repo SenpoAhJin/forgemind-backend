@@ -181,10 +181,11 @@ export function containsTerm(target: MatchTarget, term: CompiledWord): boolean {
   if (term.spaced.length === 0) return false;
 
   if (term.spaced.includes(' ')) {
-    // Only a contiguous phrase counts. Comparing the phrase against the whole
-    // squashed field instead would let a short qualifier match inside unrelated
-    // words, which is how a two-letter context term ends up excusing everything.
-    return target.spaced.includes(term.spaced);
+    // Only a contiguous phrase counts, and only on word boundaries. Comparing the
+    // phrase against the whole spaced field as a raw substring would let "foo bar"
+    // match inside "xfoo bar", which is one short qualifier away from matching a
+    // phrase that is not there at all.
+    return phraseOccurs(target.spaced, term.spaced);
   }
 
   for (const word of target.words) {
@@ -192,6 +193,85 @@ export function containsTerm(target: MatchTarget, term: CompiledWord): boolean {
     if (term.squashed.length >= SQUASH_MIN && squashWord(word) === term.squashed) return true;
   }
   return false;
+}
+
+/**
+ * Shortest fragment allowed inside a glued run.
+ *
+ * A space inserted inside a word has to be undone before a phrase can match, but
+ * only when every piece it produced still looks like a piece somebody meant to
+ * hide. One and two letter fragments are where ordinary word boundaries land —
+ * "pen is", "an alysis" — so a run containing one of those is real writing with
+ * a space in a natural place, not an obfuscated word, and is left alone.
+ */
+const MIN_GLUE_FRAGMENT = 3;
+
+/** Shortest word a glued run may produce, before it counts as the hidden word. */
+const MIN_GLUE_WORD = 5;
+
+/**
+ * True when `phrase` appears in `spaced` starting at a word boundary and ending
+ * at a word boundary. Both strings are single-space separated by construction.
+ *
+ * A phrase word may also be spread across two or more adjacent words, which is
+ * what an inserted space inside a term looks like once the text is normalized.
+ * The run is accepted only when it reassembles the phrase word exactly: every
+ * fragment clears `MIN_GLUE_FRAGMENT` and the whole clears `MIN_GLUE_WORD`, so
+ * "gun" glued from "gu" and "n" is refused while a word split down its middle
+ * is caught. Greedy is exact here rather than a guess — the fragments are
+ * appended only while the run is still shorter than the phrase word, so it stops
+ * the moment the letters line up and cannot overshoot and try again.
+ */
+function phraseOccurs(spaced: string, phrase: string): boolean {
+  const words = spaced.split(' ');
+  const wanted = phrase.split(' ');
+  if (wanted.length > words.length) return false;
+
+  for (let start = 0; start + wanted.length <= words.length; start += 1) {
+    let cursor = start;
+    let matched = true;
+    for (const word of wanted) {
+      const next = glueForward(words, cursor, word);
+      if (next < 0) {
+        matched = false;
+        break;
+      }
+      cursor = next;
+    }
+    if (matched) return true;
+  }
+  return false;
+}
+
+/**
+ * Consumes words from `from` until they spell `word`.
+ *
+ * Returns the position just past them, or -1 when they cannot spell it. A run of
+ * one word is the ordinary exact match and carries no minimum, because that is
+ * the plain case every phrase already relied on.
+ */
+function glueForward(words: string[], from: number, word: string): number {
+  if (from >= words.length || word.length === 0) return -1;
+
+  let glued = '';
+  const run: string[] = [];
+  let cursor = from;
+
+  while (cursor < words.length && glued.length < word.length) {
+    const piece = words[cursor];
+    run.push(piece);
+    glued += piece;
+    cursor += 1;
+
+    if (glued.length > word.length) return -1;
+    if (glued !== word) continue;
+
+    if (run.length === 1) return cursor;
+    if (glued.length < MIN_GLUE_WORD) return -1;
+    if (run.some((fragment) => fragment.length < MIN_GLUE_FRAGMENT)) return -1;
+    return cursor;
+  }
+  return -1;
 }
 
 /**
@@ -303,7 +383,7 @@ export function indexMatches(target: MatchTarget, index: TermIndex): CompiledWor
       const candidates = index.byPhraseHead.get(head);
       if (!candidates) continue;
       for (const candidate of candidates) {
-        if (target.spaced.includes(candidate.spaced)) hits.add(candidate);
+        if (phraseOccurs(target.spaced, candidate.spaced)) hits.add(candidate);
       }
     }
   }

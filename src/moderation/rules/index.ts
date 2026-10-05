@@ -10,6 +10,7 @@ export * from './adult';
 export * from './blockedTerms';
 export * from './cosplayTerms';
 export * from './hate';
+export * from './languageTerms';
 export * from './prohibited';
 export * from './unrelated';
 export * from './vulgar';

@@ -37,6 +37,9 @@ import {
   COSPLAY_TERMS,
   ALLOWLIST,
   blockedTermIndex,
+  languageAllowlist,
+  languageTermCode,
+  languageTermMatches,
   LIMITS,
 } from './rules';
 
@@ -95,6 +98,18 @@ function datasetTerms(): TermIndex {
 }
 
 /**
+ * The clean-word allowlist from the per-language files, resolved once on first
+ * use for the same reason `datasetTerms` is: the list is compiled through the
+ * normalizer this file uses, and a module-scope build would race it.
+ */
+let languageAllow: CompiledWord[] | null = null;
+
+function languageAllowTerms(): CompiledWord[] {
+  if (languageAllow === null) languageAllow = [...languageAllowlist()];
+  return languageAllow;
+}
+
+/**
  * Pre-computed rule forms, built once per process rather than per request. The
  * source lists in ./rules stay readable; this is the fast lookup shape.
  */
@@ -123,6 +138,23 @@ const COMPILED = {
 function isAllowlistedHit(target: MatchTarget, term: CompiledWord): boolean {
   if (term.spaced.length === 0) return false;
   return COMPILED.allow.some((entry) => {
+    if (entry.spaced.length <= term.spaced.length) return false;
+    if (!containsTerm(target, entry)) return false;
+    return entry.spaced.includes(term.spaced) || entry.squashed.includes(term.squashed);
+  });
+}
+
+/**
+ * The same rescue, applied to the per-language allowlist.
+ *
+ * Kept separate from `isAllowlistedHit` rather than folded into it because the
+ * per-language list is four hundred words built from clean-row frequency, and it
+ * is expected to change on every regeneration. Sharing one array would mean a
+ * rebuild of one file could silently tighten or loosen the other's behaviour.
+ */
+function isAllowlistedLanguageHit(target: MatchTarget, term: CompiledWord): boolean {
+  if (term.spaced.length === 0) return false;
+  return languageAllowTerms().some((entry) => {
     if (entry.spaced.length <= term.spaced.length) return false;
     if (!containsTerm(target, entry)) return false;
     return entry.spaced.includes(term.spaced) || entry.squashed.includes(term.squashed);
@@ -198,6 +230,27 @@ export function moderateListing(listing: ListingInput): ModerationResult {
     // whole-word / contiguous-phrase matching as every list above.
     if (indexMatches(target, datasetTerms()).length > 0) {
       push('BLOCKED_TERM');
+    }
+
+    // The per-language lists. Same normalizer, same matcher, but each hit
+    // reports the code its own class earned, so the seller reads the message for
+    // the kind of problem rather than one generic sentence. Coded rules keep the
+    // exemptions the curated rules have: a prop qualifier still rescues a
+    // prohibited item, and cosplay context still rescues relevance.
+    const seen = new Set<ViolationCode>();
+    for (const term of languageTermMatches(target)) {
+      if (isAllowlistedLanguageHit(target, term)) continue;
+      const code = languageTermCode(term.spaced);
+      if (code === undefined || seen.has(code)) continue;
+      if (code === 'PROHIBITED_ITEM' && hasItemContext(target)) continue;
+      if (
+        code === 'UNRELATED' &&
+        (hasCosplayContext(combined) || hasItemContext(target) || matchesCategory(combined, listing.category))
+      ) {
+        continue;
+      }
+      seen.add(code);
+      push(code);
     }
 
     // Unrelated goods, only when nothing in the listing ties it to cosplay.
