@@ -14,7 +14,7 @@ import { config } from '../config';
 import { query } from '../db';
 import { classifyDbError, generateRequestId } from '../db/errors';
 import { generateSessionToken, hashPassword, hashSessionToken, verifyPassword } from './crypto';
-import { PublicUser, USER_PUBLIC_COLUMNS } from './publicUser';
+import { PublicUser, USER_PUBLIC_COLUMNS, qualifiedPublicColumns, withMaskedRegistration } from './publicUser';
 import {
   EMPTY_ORGANIZER_FIELDS,
   OrganizerFields,
@@ -183,6 +183,12 @@ authRouter.post(
  * POST /auth/login
  * Verifies the password against the stored bcrypt hash, then issues a session.
  */
+/**
+ * The payout number is SELECTed only so its masked form can be derived, and is
+ * stripped by withMaskedRegistration before the payload is returned.
+ */
+const AUTH_RESPONSE_COLUMNS = `${USER_PUBLIC_COLUMNS}, payout_method_number`;
+
 authRouter.post(
   '/login',
   asyncHandler(async (req, res) => {
@@ -193,8 +199,11 @@ authRouter.post(
     }
     const input = parsed.value;
 
-    const rows = await query<PublicUser & { password_hash: string }>(
-      `SELECT ${USER_PUBLIC_COLUMNS}, password_hash FROM users WHERE email = $1`,
+    const rows = await query<PublicUser & { password_hash: string; banned_at: Date | null }>(
+      `SELECT ${qualifiedPublicColumns('u')}, u.payout_method_number, u.password_hash, m.banned_at 
+       FROM users u
+       LEFT JOIN marketplace_user_status m ON m.user_id = u.user_id
+       WHERE u.email = $1`,
       [input.email],
     );
 
@@ -211,17 +220,25 @@ authRouter.post(
       return;
     }
 
-    const { password_hash: storedHash, ...publicUser } = rows[0];
+    const { password_hash: storedHash, banned_at, ...publicUser } = rows[0];
     const ok = await verifyPassword(input.password, storedHash);
     if (!ok) {
       res.status(401).json(invalid);
       return;
     }
 
+    // Banned users cannot log in
+    if (banned_at) {
+      res.status(403).json({
+        error: 'account_banned',
+      });
+      return;
+    }
+
     const grant = await issueSession(publicUser.user_id, req);
 
     res.status(200).json({
-      user: publicUser,
+      user: withMaskedRegistration(publicUser),
       session_token: grant.token,
       expires_at: grant.expiresAt.toISOString(),
     });
@@ -281,6 +298,43 @@ async function resolveSession(
   );
   return rows.length > 0 ? rows[0] : null;
 }
+
+/**
+ * GET /auth/me
+ * Returns fresh user data from database for the current session.
+ * Used by mobile app to refresh user state after approval/changes.
+ */
+authRouter.get(
+  '/me',
+  asyncHandler(async (req, res) => {
+    const token = readBearerToken(req);
+    if (!token) {
+      res.status(401).json({
+        error: 'invalid_session',
+        message: 'Missing or malformed Authorization header',
+      });
+      return;
+    }
+
+    const rows = await query<PublicUser>(
+      `SELECT ${qualifiedPublicColumns('u')}, u.payout_method_number
+         FROM sessions s
+         JOIN users u ON u.user_id = s.user_id
+        WHERE s.refresh_token_hash = $1 AND s.expires_at > NOW()`,
+      [hashSessionToken(token)],
+    );
+
+    if (rows.length === 0) {
+      res.status(401).json({
+        error: 'invalid_session',
+        message: 'Session is unknown, already revoked, or expired',
+      });
+      return;
+    }
+
+    res.status(200).json({ user: withMaskedRegistration(rows[0]) });
+  }),
+);
 
 /**
  * PATCH /auth/organizer-fields
