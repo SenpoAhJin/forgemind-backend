@@ -23,9 +23,14 @@
  *   anything.
  * - Server validation is the authority. The mobile screener is a UX pre-check
  *   and is not trusted: every listing is screened again here through
- *   checkListingContent before it is stored.
- * - A blocked listing is still stored, with status 'blocked', so the seller can
- *   see it and appeal it. It never appears in the browse feed.
+ *   checkListingContent and checkListingQuality before it is stored.
+ * - A listing that fails either content gate is refused with 422 and no row is
+ *   written. Nothing is stored means nothing for a seller to appeal and nothing
+ *   for a later cleanup to find, which is the point: junk and unsafe text should
+ *   never become a row. Rows that already exist and are held later by a
+ *   rescreen are a different case and stay appealable.
+ * - A listing the same seller already has on the marketplace, word for word, is
+ *   a copy-paste duplicate and is refused with 409 before the insert.
  * - No listing text is written to a log, an error message or any other listing's
  *   response.
  */
@@ -51,8 +56,10 @@ import {
   REMOVED_REASONS,
   type ListingRow,
 } from './listings';
-import { BLOCKED_REASON, checkListingContent, violationSummary } from './screener';
+import { checkListingContent, violationSummary } from './screener';
+import { checkListingQuality, QUALITY_MESSAGE } from './quality';
 import { LIMITS } from '../moderation';
+import { PRICE_OUTLIER_PHP } from './limits';
 
 export const listingsRouter = Router();
 
@@ -68,6 +75,39 @@ const MAX_LIMIT = 100;
 
 /** Max photos/messages are enforced in ./listings; this is the appeal cap. */
 const APPEAL_MESSAGE_MAX = LIMITS.descriptionMax;
+
+/**
+ * The one message a refused create returns.
+ *
+ * Says what to do and not which gate fired, for the same reason
+ * BLOCKED_REASON in ./screener does: the specific rule would turn the endpoint
+ * into a probe. The caller that needs the field back is the seller, and the
+ * seller already has it from POST /marketplace/listings/check, which this
+ * screen runs before every save.
+ */
+export const CREATE_REJECTED_MESSAGE =
+  'This listing could not be published. Please review the listing guidelines and try again.';
+
+/**
+ * Statuses a repeated title collides with.
+ *
+ * Active and blocked only. 'sold' and 'cancelled' are finished: an item that
+ * sold, or that the seller took down, is exactly the item they are allowed to
+ * list again, so re-posting it is not a duplicate.
+ */
+const DUPLICATE_STATUSES: readonly string[] = ['active', 'blocked'];
+
+/**
+ * Title form used for the duplicate match: trimmed, internal whitespace
+ * collapsed to single spaces, lowercased.
+ *
+ * The same three steps SQL applies to `item_title`, so a title typed with two
+ * spaces matches one stored with one and neither side can disagree about what
+ * "the same title" means.
+ */
+function normaliseForDuplicate(title: string): string {
+  return title.trim().replace(/\s+/g, ' ').toLowerCase();
+}
 
 /**
  * Columns read for every listing response.
@@ -452,6 +492,34 @@ listingsRouter.post(
         return;
       }
 
+      // Quality gate: check if the text appears to be real words before moderation.
+      // Gibberish listings (keyboard mash, repeated characters) fail here and are
+      // never stored or moderated.
+      const qualityFields = {
+        title: input.title,
+        description: input.description,
+        trade_offered_item: input.trade_offered_item,
+        trade_wanted_item: input.trade_wanted_item,
+      };
+      const quality = checkListingQuality(qualityFields);
+      if (!quality.ok) {
+        const fields: Record<string, string> = {};
+        for (const issue of quality.issues) {
+          fields[issue.field] = QUALITY_MESSAGE;
+        }
+        console.warn(
+          `[marketplace] listing rejected user=${caller.user_id} gate=quality codes=${quality.issues
+            .map((issue) => issue.code)
+            .join(',')} fields=${quality.issues.map((issue) => issue.field).join(',')}`,
+        );
+        res.status(422).json({
+          error: 'listing_quality',
+          message: QUALITY_MESSAGE,
+          fields,
+        });
+        return;
+      }
+
       const verdict = await checkListingContent({
         title: input.title,
         description: input.description,
@@ -461,14 +529,51 @@ listingsRouter.post(
         deposit_note: input.deposit_note,
       });
 
+      // Refused before the INSERT, so a listing that fails a content gate never
+      // becomes a row: no status to reconcile, no reason to store, nothing for a
+      // later cleanup to find. The codes and fields are logged because a
+      // moderation log carrying the text would be a second copy of everything
+      // the rules keep out; the response carries neither.
       if (!verdict.allowed) {
         const summary = violationSummary(verdict.violations);
         console.warn(
-          `[marketplace] listing blocked user=${caller.user_id} fields=${summary.fields} codes=${summary.codes} screener=${verdict.screener_version}`,
+          `[marketplace] listing rejected user=${caller.user_id} gate=moderation fields=${summary.fields} codes=${summary.codes} screener=${verdict.screener_version}`,
         );
+        res.status(422).json({
+          error: 'content_rejected',
+          message: CREATE_REJECTED_MESSAGE,
+        });
+        return;
       }
 
-      const blocked = !verdict.allowed;
+      // The same seller re-posting the same title in the same category is a
+      // copy, not a second item. Matched on the title normalised the way both
+      // sides normalise it, so trailing spaces and case do not create a
+      // second listing. Sold and cancelled rows are deliberately not matched:
+      // an item that sold, or that the seller took down, can be listed again.
+      const normalisedTitle = normaliseForDuplicate(input.title);
+      const normalisedDesc = normaliseForDuplicate(input.description);
+      const duplicates = await query<{ listing_id: string }>(
+        `SELECT listing_id
+           FROM listings
+          WHERE seller_user_id = $1
+            AND category_id = $2
+            AND listing_status = ANY($3::varchar[])
+            AND lower(btrim(regexp_replace(item_title, '[[:space:]]+', ' ', 'g'))) = $4
+            AND lower(btrim(regexp_replace(item_description, '[[:space:]]+', ' ', 'g'))) = $5
+          LIMIT 1`,
+        [caller.user_id, input.category_id, DUPLICATE_STATUSES as string[], normalisedTitle, normalisedDesc],
+      );
+      if (duplicates.length > 0) {
+        console.warn(
+          `[marketplace] listing rejected user=${caller.user_id} gate=duplicate status=409`,
+        );
+        res.status(409).json({
+          error: 'duplicate_listing',
+          message: 'You already have this listing on the marketplace. Edit or remove it instead.',
+        });
+        return;
+      }
 
       // Two statements rather than INSERT ... RETURNING through a CTE: a
       // data-modifying CTE and the main query share one snapshot, so the main
@@ -476,19 +581,19 @@ listingsRouter.post(
       const inserted = await query<{ listing_id: string }>(
         `INSERT INTO listings (
            seller_user_id, item_title, item_description, category_id,
-           transaction_type, price, condition, photo_urls,
-           screening_result, screening_reason, listing_status, appeal_status,
+           transaction_type, price, price_outlier, condition, photo_urls,
+           screening_result, listing_status, appeal_status,
            post_type, budget, rate, rental_fee, rental_period_days, deposit_note,
            trade_offered_item, trade_wanted_item, trade_estimated_value,
            request_deadline, handoff_method, open_to_trade, screener_version,
            published_at, created_at, updated_at
          ) VALUES (
-           $1,$2,$3,$4,$5,$6,$7,$8,
-           $9,$10,$11,'none',
-           $12,$13,$14,$15,$16,$17,
-           $18,$19,$20,
-           $21,$22,$23,$24,
-           $25::timestamptz,
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,
+           'passed','active','none',
+           $10,$11,$12,$13,$14,$15,
+           $16,$17,$18,
+           $19,$20,$21,$22,
+           $23::timestamptz,
            NOW(), NOW()
          )
          RETURNING listing_id`,
@@ -499,11 +604,9 @@ listingsRouter.post(
           input.category_id,
           legacyTransactionType(input.post_type),
           input.price,
+          input.price > PRICE_OUTLIER_PHP ? 'high' : null,
           input.condition,
           JSON.stringify(input.photo_urls),
-          blocked ? 'blocked' : 'passed',
-          blocked ? BLOCKED_REASON : null,
-          blocked ? 'blocked' : 'active',
           input.post_type,
           input.budget,
           input.rate,
@@ -517,7 +620,7 @@ listingsRouter.post(
           input.handoff_method,
           input.open_to_trade,
           verdict.screener_version,
-          blocked ? null : new Date(),
+          new Date(),
         ],
       );
 
@@ -527,20 +630,10 @@ listingsRouter.post(
         return;
       }
 
-      res.status(201).json({
-        listing: toOwnerListing(created),
-        blocked,
-        screening_result: blocked ? 'blocked' : 'passed',
-        screening_reason: blocked ? BLOCKED_REASON : null,
-        // Owner-only, and already available from /marketplace/listings/check. Kept
-        // here so a client that skipped the pre-check can still tell the seller
-        // which field to reword.
-        violations: verdict.violations.map((violation) => ({
-          field: violation.field,
-          code: violation.code,
-          message: violation.message,
-        })),
-      });
+      // Everything the caller needs to know about a refusal arrived as a 422,
+      // so the accepted answer is just the listing. A client that skipped the
+      // pre-check gets the generic refusal above rather than a list of codes.
+      res.status(201).json({ listing: toOwnerListing(created) });
     } catch (err) {
       failDb(res, err, 'create');
     }

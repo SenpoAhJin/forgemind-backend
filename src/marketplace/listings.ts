@@ -13,6 +13,7 @@
 
 import { LIMITS } from '../moderation';
 import { POST_TYPES, REMOVED_POST_TYPES, type PostType } from './rules';
+import { MAX_AMOUNT_PHP, MAX_DECIMALS, PRICE_OUTLIER_PHP } from './limits';
 
 export const CONDITIONS = ['new', 'like_new', 'good', 'fair', 'well_loved'] as const;
 export type Condition = (typeof CONDITIONS)[number];
@@ -123,11 +124,24 @@ function optionalString(
  */
 function optionalMoney(raw: unknown, positive: boolean): { value: number | null; error?: string } {
   if (raw === undefined || raw === null || raw === '') return { value: null };
-  const value = typeof raw === 'number' ? raw : Number(String(raw).trim());
+  
+  // Reject non-number types including numeric strings
+  if (typeof raw !== 'number') {
+    return { value: null, error: 'Must be a number' };
+  }
+  
+  const value = raw;
   if (!Number.isFinite(value)) return { value: null, error: 'Must be a number' };
   if (positive && value <= 0) return { value: null, error: 'Must be greater than 0' };
   if (!positive && value < 0) return { value: null, error: 'Cannot be negative' };
-  if (value > 99_999_999) return { value: null, error: 'Is too large' };
+  if (value > MAX_AMOUNT_PHP) return { value: null, error: `Maximum is ₱${MAX_AMOUNT_PHP.toLocaleString()}` };
+  
+  // Check decimal places
+  const decimalPart = value.toString().split('.')[1];
+  if (decimalPart && decimalPart.length > MAX_DECIMALS) {
+    return { value: null, error: `At most ${MAX_DECIMALS} decimal places` };
+  }
+  
   return { value: Math.round(value * 100) / 100 };
 }
 
