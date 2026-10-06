@@ -57,9 +57,12 @@ import {
   type ListingRow,
 } from './listings';
 import { checkListingContent, violationSummary } from './screener';
+import { assertCanPost, recordViolation } from './strikes';
 import { checkListingQuality, QUALITY_MESSAGE } from './quality';
 import { LIMITS } from '../moderation';
 import { PRICE_OUTLIER_PHP } from './limits';
+
+type NextPenalty = 'lock_10m' | 'lock_7d' | 'ban';
 
 export const listingsRouter = Router();
 
@@ -270,6 +273,62 @@ function decodeCursor(raw: unknown): { created: string; id: string } | null | 'i
  * Blocked, sold and cancelled rows are filtered out in SQL rather than in the
  * response, so they cannot leak through a bug in a mapping.
  */
+/**
+ * GET /marketplace/me/status
+ * 
+ * Returns the caller's posting status: lock time, ban flag, and next penalty.
+ * No strike counts or reasons exposed.
+ */
+listingsRouter.get(
+  '/me/status',
+  asyncHandler(async (req, res) => {
+    const caller = await requireMarketplaceUser(req, res);
+    if (!caller) return;
+
+    const statusRows = await query<{
+      posting_locked_until: Date | null;
+      banned_at: Date | null;
+      strike_count: number;
+    }>(
+      `SELECT posting_locked_until, banned_at, strike_count
+       FROM marketplace_user_status
+       WHERE user_id = $1`,
+      [caller.user_id]
+    );
+
+    if (statusRows.length === 0) {
+      res.status(200).json({
+        posting_locked_until: null,
+        banned: false,
+        next_penalty: 'lock_10m',
+      });
+      return;
+    }
+
+    const status = statusRows[0];
+    const banned = !!status.banned_at;
+    
+    // Lazy expiry: past locks are ignored
+    const lockedUntil = status.posting_locked_until && new Date(status.posting_locked_until) > new Date()
+      ? status.posting_locked_until
+      : null;
+
+    // Compute next penalty from current strike count
+    let nextPenalty: NextPenalty = 'lock_10m';
+    if (status.strike_count >= 5) {
+      nextPenalty = 'ban';
+    } else if (status.strike_count === 4) {
+      nextPenalty = 'lock_7d';
+    }
+
+    res.status(200).json({
+      posting_locked_until: lockedUntil ? new Date(lockedUntil).toISOString() : null,
+      banned,
+      next_penalty: nextPenalty,
+    });
+  })
+);
+
 listingsRouter.get(
   '/listings',
   asyncHandler(async (req, res) => {
@@ -422,6 +481,23 @@ listingsRouter.post(
     const caller = await requireMarketplaceUser(req, res);
     if (!caller) return;
 
+    // Check strike status before attempting to post
+    const canPost = await assertCanPost(caller.user_id);
+    if ('locked' in canPost) {
+      res.status(423).json({
+        error: 'posting_locked',
+        locked_until: canPost.locked_until.toISOString(),
+        message: 'Posting is paused for now',
+      });
+      return;
+    }
+    if ('banned' in canPost) {
+      res.status(403).json({
+        error: 'account_banned',
+      });
+      return;
+    }
+
     if (!consumeCreateQuota(caller.user_id)) {
       res.status(429).json({
         error: 'rate_limited',
@@ -539,9 +615,20 @@ listingsRouter.post(
         console.warn(
           `[marketplace] listing rejected user=${caller.user_id} gate=moderation fields=${summary.fields} codes=${summary.codes} screener=${verdict.screener_version}`,
         );
+
+        // Record strike and apply penalty
+        const strikeInfo = await recordViolation(
+          caller.user_id,
+          'text',
+          summary.codes.split(',')[0] || 'content_blocked',
+        );
+
         res.status(422).json({
           error: 'content_rejected',
           message: CREATE_REJECTED_MESSAGE,
+          next_penalty: strikeInfo.next_penalty,
+          action: strikeInfo.action,
+          locked_until: strikeInfo.locked_until?.toISOString(),
         });
         return;
       }
