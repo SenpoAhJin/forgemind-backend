@@ -416,9 +416,10 @@ listingsRouter.get(
         params,
       );
 
+      const photosMap = await loadListingPhotos(rows.map(r => r.listing_id));
       const last = rows[rows.length - 1];
       res.status(200).json({
-        listings: rows.map(row => toPublicListing(row, caller.user_id)),
+        listings: rows.map(row => toPublicListing(row, caller.user_id, photosMap.get(row.listing_id) || [])),
         count: rows.length,
         limit,
         next_cursor: rows.length === limit && last ? encodeCursor(last) : null,
@@ -1120,7 +1121,13 @@ listingsRouter.delete(
         return;
       }
 
-      // Delete the listing
+      // Delete photo files first (rows will CASCADE)
+      const photos = await query<{ file_path: string }>(
+        'SELECT file_path FROM listing_photos WHERE listing_id = $1',
+        [id]
+      );
+      
+      // Delete the listing (CASCADE deletes photo rows)
       const deleted = await query<{ listing_id: string }>(
         `DELETE FROM listings
           WHERE listing_id = $1
@@ -1132,6 +1139,17 @@ listingsRouter.delete(
       if (deleted.length === 0) {
         res.status(404).json({ error: 'not_found', message: 'Listing not found' });
         return;
+      }
+
+      // Delete photo files from disk
+      const fs = await import('fs');
+      const path = await import('path');
+      const uploadsDir = path.join(__dirname, '../../uploads');
+      for (const photo of photos) {
+        const filePath = path.join(uploadsDir, photo.file_path);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
       }
 
       res.status(200).json({ message: 'Listing permanently deleted' });
