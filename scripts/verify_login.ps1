@@ -9,18 +9,20 @@ function Check($name, $cond) {
   else { $script:fail++; Write-Host "[FAIL] $name" -ForegroundColor Red }
 }
 
-function Api($method, $path, $session, $body) {
-  $headers = @{'Content-Type'='application/json'}
+function Api($method, $path, $session, $body, $skipContentType = $false) {
+  $headers = @{}
+  if (-not $skipContentType) { $headers['Content-Type'] = 'application/json' }
   if ($session) { $headers['Authorization'] = "Bearer $session" }
   try {
     $r = Invoke-WebRequest -Uri "$API$path" -Method $method -Headers $headers -Body ($body | ConvertTo-Json -Compress) -UseBasicParsing
-    @{status=$r.StatusCode; json=($r.Content | ConvertFrom-Json)}
+    @{status=$r.StatusCode; json=($r.Content | ConvertFrom-Json); raw=$r.Content}
   } catch {
     $resp = $_.Exception.Response
     $stream = $resp.GetResponseStream()
     $reader = New-Object System.IO.StreamReader($stream)
     $content = $reader.ReadToEnd()
-    @{status=[int]$resp.StatusCode; json=($content | ConvertFrom-Json -ErrorAction SilentlyContinue)}
+    $parsed = $content | ConvertFrom-Json -ErrorAction SilentlyContinue
+    @{status=[int]$resp.StatusCode; json=$parsed; raw=$content}
   }
 }
 
@@ -67,20 +69,27 @@ try {
   # Empty body
   $empty = Api 'POST' '/auth/login' $null @{}
   Check 'empty body 400' ($empty.status -eq 400)
-  $emptyFields = if ($empty.json.fields) {$empty.json.fields.PSObject.Properties.Name -join ','} else {'none'}
-  Check 'empty body fields=email,password' ($emptyFields -eq 'email,password')
+  # Debug: Write-Host "DEBUG empty fields: $($empty.json.fields | ConvertTo-Json -Compress)"
+  Check 'empty body has email field' ($null -ne $empty.json.fields.email -and $empty.json.fields.email -ne '')
+  Check 'empty body has password field' ($null -ne $empty.json.fields.password -and $empty.json.fields.password -ne '')
 
   # Email only
   $emailOnly = Api 'POST' '/auth/login' $null @{email='test@test.com'}
   Check 'email only 400' ($emailOnly.status -eq 400)
-  $emailOnlyFields = if ($emailOnly.json.fields) {$emailOnly.json.fields.PSObject.Properties.Name -join ','} else {'none'}
-  Check 'email only fields=password' ($emailOnlyFields -eq 'password')
+  Check 'email only has password field' ($null -ne $emailOnly.json.fields.password -and $emailOnly.json.fields.password -ne '')
+  Check 'email only has no email field' ($null -eq $emailOnly.json.fields.email -or $emailOnly.json.fields.email -eq '')
 
   # Password only
   $passOnly = Api 'POST' '/auth/login' $null @{password='test'}
   Check 'password only 400' ($passOnly.status -eq 400)
-  $passOnlyFields = if ($passOnly.json.fields) {$passOnly.json.fields.PSObject.Properties.Name -join ','} else {'none'}
-  Check 'password only fields=email' ($passOnlyFields -eq 'email')
+  Check 'password only has email field' ($null -ne $passOnly.json.fields.email -and $passOnly.json.fields.email -ne '')
+  Check 'password only has no password field' ($null -eq $passOnly.json.fields.password -or $passOnly.json.fields.password -eq '')
+
+  # Content-Type variants (from 1c)
+  $noContentType = Api 'POST' '/auth/login' $null @{email=$email; password=$password} -skipContentType $true
+  Check 'no Content-Type 400' ($noContentType.status -eq 400)
+  Check 'no Content-Type has email field' ($null -ne $noContentType.json.fields.email -and $noContentType.json.fields.email -ne '')
+  Check 'no Content-Type has password field' ($null -ne $noContentType.json.fields.password -and $noContentType.json.fields.password -ne '')
 
   Write-Host "`nSummary: pass=$script:pass fail=$script:fail"
 } finally {
