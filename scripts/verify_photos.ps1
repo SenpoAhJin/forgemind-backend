@@ -1,7 +1,7 @@
 # Photo upload verification script
 # Tests photo upload, listing creation with photos, permissions, cleanup
 $ErrorActionPreference = 'Continue'
-$base = 'http://localhost:3000'
+$base = if ($env:BASE_URL) { $env:BASE_URL } else { 'http://localhost:3000' }
 $envFile = 'C:\Users\Alord\OneDrive\Documents\School\MOR\Concept\ACCEPTED COSPLAY CONTENTS\CosForge_System - Copy\forgemind-backend\.env'
 $env:PGPASSWORD = ((Get-Content -LiteralPath $envFile) | Where-Object { $_ -match '^\s*DB_PASSWORD=' } | ForEach-Object { ($_ -split '=',2)[1].Trim() })
 
@@ -51,23 +51,25 @@ function Api($method, $path, $session, $body) {
 function UploadPhoto($session, $filename, $bytes) {
   $boundary = [guid]::NewGuid().ToString('N')
   $headers = @{
-    'Authorization' = "Bearer $session"
     'Content-Type' = "multipart/form-data; boundary=$boundary"
   }
+  if ($session) { $headers['Authorization'] = "Bearer $session" }
   
-  $body = @"
---$boundary
-Content-Disposition: form-data; name="photo"; filename="$filename"
-Content-Type: application/octet-stream
-
-"@ + [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($bytes) + @"
-
---$boundary--
-"@
+  $LF = "`r`n"
+  $bodyLines = @(
+    "--$boundary",
+    "Content-Disposition: form-data; name=`"photo`"; filename=`"$filename`"",
+    "Content-Type: application/octet-stream",
+    "",
+    [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($bytes),
+    "--$boundary--",
+    ""
+  )
+  $bodyText = ($bodyLines -join $LF)
   
   try {
     $r = Invoke-WebRequest -Uri "$base/marketplace/photos" -Method POST -Headers $headers `
-      -Body ([System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($body)) -UseBasicParsing -TimeoutSec 20
+      -Body ([System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($bodyText)) -UseBasicParsing -TimeoutSec 20
     $json = $null
     try { $json = $r.Content | ConvertFrom-Json } catch {}
     return @{ status = [int]$r.StatusCode; json = $json }
@@ -102,7 +104,10 @@ function Register($email) {
   if ($r.status -eq 201) {
     $l = Api 'POST' '/auth/login' $null @{ email = $email; password = $secret }
     if ($l.status -eq 200 -and $l.json.user.user_id) {
-      $script:testUserIds += $l.json.user.user_id
+      $uid = $l.json.user.user_id
+      $script:testUserIds += $uid
+      # Grant verified marketplace access as seller
+      $null = psql forgemind_dev -U forgemind_app -c "UPDATE users SET verification_status='verified', marketplace_role='seller', seller_display_name='PhotoSeller Shop', payout_method_label='GCash', payout_method_number='09123456789' WHERE user_id='$uid'" --tuples-only --no-align
       return $l.json.session_token
     }
   }
@@ -189,7 +194,7 @@ if ($photo1.json.photo_id) { $script:testPhotoIds += $photo1.json.photo_id }
 if ($photo2.json.photo_id) { $script:testPhotoIds += $photo2.json.photo_id }
 
 $listing = Api 'POST' '/marketplace/listings' $s2 @{
-  title = 'Wig with Photos'; description = 'Test listing'; category_id = 'c71d6f89-65a8-4738-b1d5-6e24e6d7b8d9'
+  title = 'Wig with Photos'; description = 'Test listing'; category = 'Makeup & Contacts'
   post_type = 'sell'; price = 500; condition = 'new'; photo_ids = @($photo1.json.photo_id, $photo2.json.photo_id)
 }
 Check 'create listing 201' ($listing.status -eq 201)
@@ -215,14 +220,14 @@ if ($listing.json.listing.photos.Count -gt 0) {
 $s2Photo = UploadPhoto $s2 'mine.png' $pngBytes
 if ($s2Photo.json.photo_id) { $script:testPhotoIds += $s2Photo.json.photo_id }
 $stolen = Api 'POST' '/marketplace/listings' $s1 @{
-  title = 'Stolen Photo'; description = 'Test'; category_id = 'c71d6f89-65a8-4738-b1d5-6e24e6d7b8d9'
+  title = 'Stolen Photo'; description = 'Test'; category = 'Makeup & Contacts'
   post_type = 'sell'; price = 100; condition = 'new'; photo_ids = @($s2Photo.json.photo_id)
 }
 Check 'cannot steal photo' ($stolen.status -eq 400 -and $stolen.json.error -eq 'invalid_photo_ids')
 
 # --- same photo_id twice rejected ---
 $dup = Api 'POST' '/marketplace/listings' $s2 @{
-  title = 'Duplicate'; description = 'Test'; category_id = 'c71d6f89-65a8-4738-b1d5-6e24e6d7b8d9'
+  title = 'Duplicate'; description = 'Test'; category = 'Makeup & Contacts'
   post_type = 'sell'; price = 100; condition = 'new'; photo_ids = @($photo1.json.photo_id, $photo1.json.photo_id)
 }
 Check 'duplicate photo_id rejected' ($dup.status -eq 400 -and $dup.json.error -eq 'validation_error')
@@ -237,7 +242,7 @@ for ($i = 0; $i -lt 6; $i++) {
   }
 }
 $tooMany = Api 'POST' '/marketplace/listings' $s2 @{
-  title = 'Too Many Photos'; description = 'Test'; category_id = 'c71d6f89-65a8-4738-b1d5-6e24e6d7b8d9'
+  title = 'Too Many Photos'; description = 'Test'; category = 'Makeup & Contacts'
   post_type = 'sell'; price = 100; condition = 'new'; photo_ids = $photos
 }
 Check '6 photos rejected' ($tooMany.status -eq 400 -and $tooMany.json.error -eq 'validation_error')
@@ -255,7 +260,7 @@ $blockWord = 'cocaine'
 $photo3 = UploadPhoto $s2 'blocked.png' $pngBytes
 if ($photo3.json.photo_id) { $script:testPhotoIds += $photo3.json.photo_id }
 $blocked = Api 'POST' '/marketplace/listings' $s2 @{
-  title = "Test $blockWord listing"; description = 'blocked'; category_id = 'c71d6f89-65a8-4738-b1d5-6e24e6d7b8d9'
+  title = "Test $blockWord listing"; description = 'blocked'; category = 'Makeup & Contacts'
   post_type = 'sell'; price = 100; condition = 'new'; photo_ids = @($photo3.json.photo_id)
 }
 if ($blocked.json.listing.id) { $script:testListingIds += $blocked.json.listing.id }
@@ -317,8 +322,8 @@ if ($script:fails.Count -gt 0) {
 
 } finally {
   # Cleanup
-  foreach ($pid in $testPhotoIds) {
-    try { & psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -c "DELETE FROM listing_photos WHERE id = '$pid'" 2>&1 | Out-Null } catch {}
+  foreach ($photoId in $testPhotoIds) {
+    try { & psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -c "DELETE FROM listing_photos WHERE id = '$photoId'" 2>&1 | Out-Null } catch {}
   }
   foreach ($lid in $testListingIds) {
     try { & psql -w -h 127.0.0.1 -U forgemind_app -d forgemind_dev -c "DELETE FROM listings WHERE listing_id = '$lid'" 2>&1 | Out-Null } catch {}
