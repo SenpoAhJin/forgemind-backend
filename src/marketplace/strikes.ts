@@ -84,8 +84,13 @@ export async function recordViolation(
       `INSERT INTO marketplace_user_status (user_id, strike_count, updated_at)
        VALUES ($1, 0, NOW())
        ON CONFLICT (user_id) DO UPDATE SET updated_at = NOW()
-       RETURNING user_id, strike_count, banned_at
-       FOR UPDATE`,
+       RETURNING user_id, strike_count, banned_at`,
+      [userId]
+    );
+    
+    // Lock for concurrent writes
+    await client.query(
+      `SELECT * FROM marketplace_user_status WHERE user_id = $1 FOR UPDATE`,
       [userId]
     );
 
