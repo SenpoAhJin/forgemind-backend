@@ -92,7 +92,7 @@ export interface ListingInput {
   handoff_method: HandoffMethod | null;
   open_to_trade: boolean;
   condition: Condition;
-  photo_urls: string[];
+  photo_ids?: string[]; // Optional array of pending photo IDs
 }
 
 export type ParseFailure = { ok: false; message: string; fields: Record<string, string> };
@@ -181,6 +181,26 @@ function parseInteger(raw: unknown, min: number): { value: number | null; error?
   return { value };
 }
 
+function parsePhotoIds(raw: unknown): { value: string[]; error?: string } {
+  if (raw === undefined || raw === null) return { value: [] };
+  if (!Array.isArray(raw)) return { value: [], error: 'Must be an array' };
+  if (raw.length > 5) {
+    return { value: [], error: 'At most 5 photos' };
+  }
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== 'string') return { value: [], error: 'Each photo_id must be a string' };
+    const trimmed = entry.trim();
+    if (trimmed === '') continue;
+    if (seen.has(trimmed)) return { value: [], error: 'Duplicate photo_id' };
+    seen.add(trimmed);
+    ids.push(trimmed);
+  }
+  return { value: ids };
+}
+
+/** Legacy: parse photo_urls array for backwards compatibility */
 function parsePhotos(raw: unknown): { value: string[]; error?: string } {
   if (raw === undefined || raw === null) return { value: [] };
   if (!Array.isArray(raw)) return { value: [], error: 'Must be a list of links' };
@@ -382,8 +402,8 @@ export function parseListingInput(body: unknown, context: ParseContext): ParseRe
     }
   }
 
-  const photos = parsePhotos(body.photos ?? body.photo_urls);
-  if (photos.error) fields.photos = photos.error;
+  const photos = parsePhotoIds(body.photo_ids);
+  if (photos.error) fields.photo_ids = photos.error;
 
   if (Object.keys(fields).length > 0) {
     return { ok: false, message: 'One or more fields are invalid', fields };
@@ -418,7 +438,7 @@ export function parseListingInput(body: unknown, context: ParseContext): ParseRe
       handoff_method: handoff,
       open_to_trade: body.open_to_trade === true,
       condition: condition as Condition,
-      photo_urls: photos.value,
+      photo_ids: photos.value,
     },
   };
 }
@@ -493,7 +513,13 @@ function dateOnly(value: Date | string | null): string | null {
 export function toPublicListing(
   row: ListingRow,
   callerUserId?: string | null,
+  photos: Array<{ photo_id: string; path: string }> = [],
 ): Record<string, unknown> {
+  // For non-active listings, only owner sees photos
+  const isOwner = callerUserId != null && row.seller_user_id === callerUserId;
+  const isActive = row.listing_status === 'active';
+  const visiblePhotos = isActive || isOwner ? photos : [];
+
   return {
     id: row.listing_id,
     title: row.item_title,
@@ -514,13 +540,13 @@ export function toPublicListing(
     handoff_method: row.handoff_method,
     open_to_trade: row.open_to_trade,
     condition: row.condition,
-    photos: row.photo_urls ?? [],
+    photos: visiblePhotos,
     status: row.listing_status,
     screening_result: row.screening_result,
     seller_user_id: row.seller_user_id,
     seller_name: row.seller_name,
     seller_verified: row.seller_verified,
-    is_owner: callerUserId != null && row.seller_user_id === callerUserId,
+    is_owner: isOwner,
     created_at: iso(row.created_at),
     updated_at: iso(row.updated_at),
   };
@@ -531,9 +557,12 @@ export function toPublicListing(
  * state, which only the owner (and a Head, through the users router) may read.
  * Every row here belongs to the caller, so is_owner is always true.
  */
-export function toOwnerListing(row: ListingRow): Record<string, unknown> {
+export function toOwnerListing(
+  row: ListingRow,
+  photos: Array<{ photo_id: string; path: string }> = [],
+): Record<string, unknown> {
   return {
-    ...toPublicListing(row, row.seller_user_id),
+    ...toPublicListing(row, row.seller_user_id, photos),
     screening_reason: row.screening_reason,
     appeal_status: row.appeal_status,
     appeal_message: row.appeal_message,

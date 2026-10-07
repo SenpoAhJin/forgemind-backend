@@ -461,8 +461,9 @@ listingsRouter.get(
         [caller.user_id, Array.from(SHARED_SEED_SELLER_IDS), limit],
       );
 
+      const photosMap = await loadListingPhotos(rows.map(r => r.listing_id));
       res.status(200).json({
-        listings: rows.map(toOwnerListing),
+        listings: rows.map(r => toOwnerListing(r, photosMap.get(r.listing_id) || [])),
         count: rows.length,
       });
     } catch (err) {
@@ -669,6 +670,25 @@ listingsRouter.post(
         return;
       }
 
+      // Validate photo_ids: must be pending and owned by caller
+      const photoIds = input.photo_ids || [];
+      if (photoIds.length > 0) {
+        const photoCheck = await query<{ id: string }>(
+          `SELECT id FROM listing_photos
+           WHERE id = ANY($1::uuid[])
+             AND owner_user_id = $2
+             AND listing_id IS NULL`,
+          [photoIds, caller.user_id]
+        );
+        if (photoCheck.length !== photoIds.length) {
+          res.status(400).json({
+            error: 'invalid_photo_ids',
+            message: 'One or more photo IDs are invalid or not owned by you.',
+          });
+          return;
+        }
+      }
+
       // Two statements rather than INSERT ... RETURNING through a CTE: a
       // data-modifying CTE and the main query share one snapshot, so the main
       // query cannot see the row it just inserted. Write, then read it back.
@@ -700,7 +720,7 @@ listingsRouter.post(
           input.price,
           input.price > PRICE_OUTLIER_PHP ? 'high' : null,
           input.condition,
-          JSON.stringify(input.photo_urls),
+          JSON.stringify([]), // Legacy photo_urls field, empty
           input.post_type,
           input.budget,
           input.rate,
@@ -718,21 +738,62 @@ listingsRouter.post(
         ],
       );
 
+      // Attach photos in the given order
+      if (photoIds.length > 0) {
+        for (let i = 0; i < photoIds.length; i++) {
+          await query(
+            `UPDATE listing_photos
+             SET listing_id = $1, position = $2, attached_at = NOW()
+             WHERE id = $3`,
+            [inserted[0].listing_id, i, photoIds[i]]
+          );
+        }
+      }
+
       const created = await readListing(inserted[0]?.listing_id ?? null);
       if (!created) {
         failDb(res, new Error('listing insert returned no row'), 'create');
         return;
       }
 
+      // Load photos for the created listing
+      const photosMap = await loadListingPhotos([created.listing_id]);
+      const listingPhotos = photosMap.get(created.listing_id) || [];
+
       // Everything the caller needs to know about a refusal arrived as a 422,
       // so the accepted answer is just the listing. A client that skipped the
       // pre-check gets the generic refusal above rather than a list of codes.
-      res.status(201).json({ listing: toOwnerListing(created) });
+      res.status(201).json({ listing: toOwnerListing(created, listingPhotos) });
     } catch (err) {
       failDb(res, err, 'create');
     }
   }),
 );
+
+/**
+ * Load photos for one or more listings.
+ * Returns map of listing_id -> [{photo_id, path}]
+ */
+async function loadListingPhotos(listingIds: string[]): Promise<Map<string, Array<{ photo_id: string; path: string }>>> {
+  if (listingIds.length === 0) return new Map();
+  
+  const rows = await query<{ listing_id: string; id: string; file_path: string; position: number }>(
+    `SELECT listing_id, id, file_path, position
+     FROM listing_photos
+     WHERE listing_id = ANY($1::uuid[])
+     ORDER BY position`,
+    [listingIds]
+  );
+
+  const map = new Map<string, Array<{ photo_id: string; path: string }>>();
+  for (const row of rows) {
+    if (!map.has(row.listing_id)) {
+      map.set(row.listing_id, []);
+    }
+    map.get(row.listing_id)!.push({ photo_id: row.id, path: row.file_path });
+  }
+  return map;
+}
 
 /** Reads one listing with its category and seller name. Null when absent. */
 async function readListing(listingId: string | null): Promise<ListingRow | null> {
@@ -751,12 +812,14 @@ async function readListing(listingId: string | null): Promise<ListingRow | null>
  * rather than a 404, and it is mapped as one instead of being answered with a
  * null body.
  */
-function sendListing(res: Response, listing: ListingRow | null, route: string): void {
+async function sendListing(res: Response, listing: ListingRow | null, route: string): Promise<void> {
   if (!listing) {
     failDb(res, new Error('listing read back returned no row'), route);
     return;
   }
-  res.status(200).json({ listing: toOwnerListing(listing) });
+  const photosMap = await loadListingPhotos([listing.listing_id]);
+  const photos = photosMap.get(listing.listing_id) || [];
+  res.status(200).json({ listing: toOwnerListing(listing, photos) });
 }
 
 /**
@@ -838,7 +901,7 @@ listingsRouter.post(
         return;
       }
 
-      sendListing(res, await readListing(id), 'sold');
+      await sendListing(res, await readListing(id), 'sold');
     } catch (err) {
       failDb(res, err, 'sold');
     }
@@ -944,7 +1007,7 @@ listingsRouter.post(
         return;
       }
 
-      sendListing(res, await readListing(id), 'remove');
+      await sendListing(res, await readListing(id), 'remove');
     } catch (err) {
       failDb(res, err, 'remove');
     }
@@ -1020,7 +1083,7 @@ listingsRouter.post(
         return;
       }
 
-      sendListing(res, await readListing(id), 'appeal');
+      await sendListing(res, await readListing(id), 'appeal');
     } catch (err) {
       failDb(res, err, 'appeal');
     }
