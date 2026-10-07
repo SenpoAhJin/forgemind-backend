@@ -53,6 +53,7 @@ import {
   parseListingInput,
   toOwnerListing,
   toPublicListing,
+  SHARED_SEED_SELLER_IDS,
   REMOVED_REASONS,
   type ListingRow,
 } from './listings';
@@ -398,6 +399,11 @@ listingsRouter.get(
         where.push(`(l.created_at, l.listing_id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`);
       }
 
+      // The shared/demo seed rows never belong in a real browse result.
+      const seedSellerParam = params.length + 1;
+      params.push(Array.from(SHARED_SEED_SELLER_IDS));
+      where.push(`NOT (l.seller_user_id = ANY($${seedSellerParam}::uuid[]))`);
+
       const limitParam = params.length + 1;
       params.push(limit);
 
@@ -449,9 +455,10 @@ listingsRouter.get(
       const rows = await query<ListingRow>(
         `SELECT ${LISTING_COLUMNS} ${LISTING_FROM}
           WHERE l.seller_user_id = $1
+            AND NOT (l.seller_user_id = ANY($2::uuid[]))
           ORDER BY l.created_at DESC, l.listing_id DESC
-          LIMIT $2`,
-        [caller.user_id, limit],
+          LIMIT $3`,
+        [caller.user_id, Array.from(SHARED_SEED_SELLER_IDS), limit],
       );
 
       res.status(200).json({

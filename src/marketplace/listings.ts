@@ -15,6 +15,24 @@ import { LIMITS } from '../moderation';
 import { POST_TYPES, REMOVED_POST_TYPES, type PostType } from './rules';
 import { MAX_AMOUNT_PHP, MAX_DECIMALS, PRICE_OUTLIER_PHP } from './limits';
 
+/**
+ * The fixed demo-seller user_ids that own the SHARED seed listings.
+ *
+ * src/scripts/seed.ts derives a seller's user_id from a fixed email
+ * (uuidv5 `user:<email>`, namespace f0e6d3a1-4b52-4c88-9e71-6a2b3c4d5e6f), so
+ * these ids are stable across re-seeds and machines, while the LISTING ids are
+ * not (their scheme changed between seeding runs). Every listing owned by one
+ * of these users is a shared demo seed, and a real user can never be one of
+ * them, so every browse and ownership query excludes their rows with a per-row
+ * membership check on the seller id — never by matching listing text, and
+ * without a global "source" flag.
+ */
+export const SHARED_SEED_SELLER_IDS: readonly string[] = [
+  '38255f1d-df55-5b03-85b7-3699325bc140', // demo-seller@forgemind.test
+  '27906419-2410-5711-b4c7-0700c19c646d', // demo-crafter@forgemind.test
+  '291fa5a1-d801-576e-8b26-d76e01016836', // demo-photographer@forgemind.test
+];
+
 export const CONDITIONS = ['new', 'like_new', 'good', 'fair', 'well_loved'] as const;
 export type Condition = (typeof CONDITIONS)[number];
 
