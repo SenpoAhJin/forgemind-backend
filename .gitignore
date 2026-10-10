@@ -25,3 +25,5 @@ Thumbs.db
 # npm run build:moderation-data. Tens of megabytes, never hand-edited.
 /data/labeled_listings.jsonl
 /data/blocked_terms_candidates.json
+
+uploads/

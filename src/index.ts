@@ -1,7 +1,13 @@
 import cors from 'cors';
 import express from 'express';
 import os from 'node:os';
+import * as path from 'path';
 import { authRouter } from './auth/router';
+import { calendarRouter } from './calendar/router';
+import { usersRouter } from './users/router';
+import { marketplaceRouter } from './marketplace/router';
+import photosRouter from './marketplace/photosRouter';
+import { startPhotoCleanup, stopPhotoCleanup } from './marketplace/photoCleanup';
 import { config } from './config';
 import { pool } from './db';
 import { classifyDbError } from './db/errors';
@@ -16,7 +22,10 @@ const EXPO_DEV_PORTS = new Set(['8081', '19006', '8082']);
 
 /** True for RFC1918 addresses plus loopback and `.local` mDNS names. */
 function isPrivateLanHost(host: string): boolean {
-  if (host === 'localhost' || host === '::1' || host.endsWith('.local')) return true;
+  // 127.0.0.1 is included because Expo web on this machine frequently resolves
+  // its own origin as http://127.0.0.1:8081 rather than http://localhost:8081,
+  // and refusing that origin would silently break the very first request.
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.local')) return true;
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (!m) return false;
   const a = Number(m[1]);
@@ -97,6 +106,40 @@ app.get('/health', async (_req, res) => {
  */
 app.use('/auth', authRouter);
 
+/**
+ * Public Event Calendar: community-submitted event listings
+ * See src/calendar/router.ts for endpoint details
+ */
+app.use('/calendar', calendarRouter);
+
+/**
+ * User Management: list users, verification (Head only)
+ * See src/users/router.ts for endpoint details
+ */
+app.use('/users', usersRouter);
+
+/**
+ * Marketplace photos: upload and attach to listings.
+ * Must come before marketplaceRouter (JSON-only middleware incompatible with multipart).
+ */
+app.use('/marketplace', photosRouter);
+
+/**
+ * Marketplace Registration: cosplayer submits, reads back own registration.
+ * See src/marketplace/router.ts for endpoint details
+ */
+app.use('/marketplace', marketplaceRouter);
+
+/**
+ * Serve uploaded photos with safe headers.
+ */
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads'), {
+  setHeaders: (res) => {
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Cache-Control', 'public, max-age=31536000');
+  },
+}));
+
 app.use((_req, res) => {
   res.status(404).json({ error: 'not_found', message: 'No such endpoint' });
 });
@@ -169,9 +212,13 @@ const server = app.listen(config.port, config.host, async () => {
 
   // Check database after server starts
   await checkDatabaseConnection();
+  
+  // Start photo cleanup timer
+  startPhotoCleanup();
 });
 
 const shutdown = async (): Promise<void> => {
+  stopPhotoCleanup();
   server.close();
   await pool.end();
   process.exit(0);
