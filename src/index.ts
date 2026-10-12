@@ -71,6 +71,9 @@ if (config.corsOrigins.length > 0) {
 
 app.use(express.json());
 
+// Make database pool available to routes
+app.set('db', pool);
+
 /**
  * Phase 3 Step 2 scope: backend + database only.
  * The listing-screener AI endpoint is deliberately NOT implemented — it is gated
@@ -129,6 +132,13 @@ app.use('/marketplace', photosRouter);
  * Marketplace offers: create, accept, decline, withdraw structured offers.
  */
 app.use('/marketplace/offers', offersRouter);
+
+/**
+ * Marketplace chat: text-only messaging, one thread per (listing, buyer).
+ * Send-time moderation only. Chat content never classified or used as AI input.
+ */
+import chatRouter from './marketplace/chatRouter';
+app.use('/marketplace/chat', chatRouter);
 
 /**
  * Marketplace Registration: cosplayer submits, reads back own registration.
