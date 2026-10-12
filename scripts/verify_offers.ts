@@ -124,32 +124,49 @@ async function createTestUser(role: 'buyer' | 'seller' | 'both', verified: boole
   return { userId, email, token: loginRes.data.session_token };
 }
 
-async function createTestListing(token: string, category: string, title: string, description: string, postType: 'sell' | 'trade' | 'commission' = 'sell'): Promise<string | null> {
-  const body: any = {
-    title,
-    description,
-    category,
-    post_type: postType,
-    photo_ids: [],
-  };
-
-  if (postType === 'sell') {
-    body.price = 100;
-    body.condition = 'new';
-  } else if (postType === 'commission') {
-    body.rate = 500;
-    body.timeline = '2-4 weeks';
+async function createTestListing(userId: string, category: string, title: string, description: string, postType: 'sell' | 'trade' | 'commission' = 'sell'): Promise<string | null> {
+  const client = await pool.connect();
+  try {
+    // Get category_id
+    const categoryResult = await client.query(
+      'SELECT category_id FROM permitted_categories WHERE category_name = $1 AND is_active = true',
+      [category]
+    );
+    
+    if (categoryResult.rows.length === 0) {
+      console.error(`Category not found: ${category}`);
+      return null;
+    }
+    
+    const categoryId = categoryResult.rows[0].category_id;
+    
+    // Determine price/rate based on post type
+    const price = postType === 'sell' ? 100 : 0;
+    const rate = postType === 'commission' ? 500 : null;
+    const condition = postType === 'commission' ? 'good' : 'new';
+    const transactionType = postType === 'sell' ? 'buy' : (postType === 'commission' ? 'both' : 'trade');
+    
+    // Insert listing directly into database
+    const result = await client.query(
+      `INSERT INTO listings (
+         seller_user_id, item_title, item_description, category_id,
+         post_type, transaction_type, price, rate, condition,
+         photo_urls, screening_result, listing_status, screener_version
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       RETURNING listing_id`,
+      [
+        userId, title, description, categoryId,
+        postType, transactionType, price, rate, condition,
+        '[]', 'passed', 'active', 2
+      ]
+    );
+    
+    const listingId = result.rows[0].listing_id;
+    createdListingIds.push(listingId);
+    return listingId;
+  } finally {
+    client.release();
   }
-
-  const { status, data } = await apiCall('POST', '/marketplace/listings', token, body);
-
-  if (status === 201 && data.listing?.id) {
-    createdListingIds.push(data.listing.id);
-    return data.listing.id;
-  }
-  
-  console.error(`Failed to create listing "${title}":`, { status, data });
-  return null;
 }
 
 async function cleanup() {
@@ -235,21 +252,21 @@ async function runTests() {
     // Create test listings
     console.log('Setup: Creating test listings...');
     const listingCostume = await createTestListing(
-      seller.token,
+      seller.userId,
       'Costumes & Cosplay',
       'Beautiful handmade Sakura costume with accessories',
       'This beautiful costume was carefully made with high quality materials and includes all the accessories you need for your next event. The outfit features detailed stitching and accurate colors that will make you stand out at any convention.',
       'sell'
     );
     const listingPhotography = await createTestListing(
-      seller.token,
+      seller.userId,
       'Photography Services',
       'Professional photo shoot for cosplayers',
       'Looking to capture your amazing cosplay? I offer professional photography services with high resolution images and quick turnaround. Perfect for portfolio building or sharing your favorite characters online.',
       'commission'
     );
     const listingCustom = await createTestListing(
-      seller.token,
+      seller.userId,
       'Commissions & Crafting Services',
       'Custom costume creation and tailoring',
       'Let me bring your dream cosplay to life! I specialize in creating custom costumes from your favorite anime and games. Every piece is made to measure and crafted with attention to detail.',
@@ -441,10 +458,152 @@ async function runTests() {
       fail('T11: Multiple commission offers allowed', 'Setup failed');
     }
 
-    // Test 12: Concurrency test - two offers from same user at same time
+    // Test 12: Cannot offer on non-active listing
+    {
+      // Create and deactivate a listing
+      const inactiveListing = await createTestListing(
+        seller.userId,
+        'Costumes & Cosplay',
+        'Inactive listing for testing',
+        'This listing will be deactivated for testing purposes',
+        'sell'
+      );
+      if (inactiveListing) {
+        const client = await pool.connect();
+        try {
+          await client.query('UPDATE listings SET listing_status = $1 WHERE listing_id = $2', ['blocked', inactiveListing]);
+        } finally {
+          client.release();
+        }
+
+        const { status } = await apiCall('POST', '/marketplace/offers', buyer.token, {
+          listing_id: inactiveListing,
+          offer_type: 'purchase',
+          offered_price: 90,
+        });
+        if (status === 404 || status === 400) {
+          pass('T12: Non-active listing rejected (404 or 400)');
+        } else {
+          fail('T12: Non-active listing rejected', `Expected 404 or 400, got ${status}`);
+        }
+      }
+    }
+
+    // Test 13: Non-seller cannot accept
+    if (offer2Id) {
+      const { status } = await apiCall('POST', `/marketplace/offers/${offer2Id}/accept`, buyer.token);
+      if (status === 403) {
+        pass('T13: Non-seller cannot accept (403)');
+      } else {
+        fail('T13: Non-seller cannot accept', `Expected 403, got ${status}`);
+      }
+    }
+
+    // Test 14: Non-seller cannot decline
+    if (offer2Id) {
+      const { status } = await apiCall('POST', `/marketplace/offers/${offer2Id}/decline`, buyer.token);
+      if (status === 403) {
+        pass('T14: Non-seller cannot decline (403)');
+      } else {
+        fail('T14: Non-seller cannot decline', `Expected 403, got ${status}`);
+      }
+    }
+
+    // Test 15: Create an offer for withdraw tests
+    let withdrawTestOfferId: string | null = null;
+    {
+      const withdrawListing = await createTestListing(
+        seller.userId,
+        'Costumes & Cosplay',
+        'Listing for withdraw test',
+        'This listing is for testing withdraw functionality',
+        'sell'
+      );
+      if (withdrawListing) {
+        const { status, data } = await apiCall('POST', '/marketplace/offers', buyer.token, {
+          listing_id: withdrawListing,
+          offer_type: 'purchase',
+          offered_price: 85,
+        });
+        if (status === 201 && data.offer_id) {
+          withdrawTestOfferId = data.offer_id;
+          createdOfferIds.push(withdrawTestOfferId);
+        }
+      }
+    }
+
+    // Test 16: Non-proposer cannot withdraw
+    if (withdrawTestOfferId) {
+      const { status } = await apiCall('POST', `/marketplace/offers/${withdrawTestOfferId}/withdraw`, seller.token);
+      if (status === 403) {
+        pass('T15: Non-proposer cannot withdraw (403)');
+      } else {
+        fail('T15: Non-proposer cannot withdraw', `Expected 403, got ${status}`);
+      }
+    }
+
+    // Test 17: Cannot re-accept an already accepted offer
+    if (offer1Id) {
+      const { status } = await apiCall('POST', `/marketplace/offers/${offer1Id}/accept`, seller.token);
+      if (status === 400 || status === 409) {
+        pass('T16: Cannot re-accept already accepted offer (400 or 409)');
+      } else {
+        fail('T16: Cannot re-accept already accepted offer', `Expected 400 or 409, got ${status}`);
+      }
+    }
+
+    // Test 18: Decline an offer, then try to accept it
+    let declineTestOfferId: string | null = null;
+    {
+      const declineListing = await createTestListing(
+        seller.userId,
+        'Costumes & Cosplay',
+        'Listing for decline test',
+        'This listing is for testing decline functionality',
+        'sell'
+      );
+      if (declineListing) {
+        const { status, data } = await apiCall('POST', '/marketplace/offers', buyer.token, {
+          listing_id: declineListing,
+          offer_type: 'purchase',
+          offered_price: 80,
+        });
+        if (status === 201 && data.offer_id) {
+          declineTestOfferId = data.offer_id;
+          createdOfferIds.push(declineTestOfferId);
+
+          // Decline it
+          await apiCall('POST', `/marketplace/offers/${declineTestOfferId}/decline`, seller.token);
+
+          // Try to accept after decline
+          const acceptRes = await apiCall('POST', `/marketplace/offers/${declineTestOfferId}/accept`, seller.token);
+          if (acceptRes.status === 400 || acceptRes.status === 409) {
+            pass('T17: Cannot accept after decline (400 or 409)');
+          } else {
+            fail('T17: Cannot accept after decline', `Expected 400 or 409, got ${acceptRes.status}`);
+          }
+        }
+      }
+    }
+
+    // Test 19: Withdraw an offer, then try to accept it
+    if (withdrawTestOfferId) {
+      // Buyer withdraws
+      await apiCall('POST', `/marketplace/offers/${withdrawTestOfferId}/withdraw`, buyer.token);
+
+      // Seller tries to accept after withdrawal
+      const { status } = await apiCall('POST', `/marketplace/offers/${withdrawTestOfferId}/accept`, seller.token);
+      if (status === 400 || status === 404) {
+        pass('T18: Cannot accept after withdraw (400 or 404)');
+      } else {
+        fail('T18: Cannot accept after withdraw', `Expected 400 or 404, got ${status}`);
+      }
+    }
+
+    // Test 20: Concurrency test - two offers from same user at same time
     {
       const listing2 = await createTestListing(
-        seller.token,
+        seller.userId,
         'Costumes & Cosplay',
         'Amazing red and black costume for sale',
         'Wonderful costume in excellent condition with everything you need included in the package',
@@ -469,9 +628,9 @@ async function runTests() {
         const conflictCount = results.filter(r => r.status === 409).length;
 
         if (successCount === 1 && conflictCount === 1) {
-          pass('T12: Concurrent offers from same user (1 success, 1 conflict)');
+          pass('T19: Concurrent offers from same user (1 success, 1 conflict)');
         } else {
-          fail('T12: Concurrent offers from same user', `Expected 1 success + 1 conflict, got ${successCount} success, ${conflictCount} conflict`);
+          fail('T19: Concurrent offers from same user', `Expected 1 success + 1 conflict, got ${successCount} success, ${conflictCount} conflict`);
         }
 
         // Track created offer
@@ -483,10 +642,10 @@ async function runTests() {
       }
     }
 
-    // Test 13: Concurrency test - two accepts on same purchase listing
+    // Test 21: Concurrency test - two accepts on same purchase listing
     {
       const listing3 = await createTestListing(
-        seller.token,
+        seller.userId,
         'Costumes & Cosplay',
         'Elegant blue costume with matching accessories',
         'Beautiful costume perfect for your next convention or photo shoot with great attention to detail',
@@ -521,12 +680,12 @@ async function runTests() {
           const acceptConflictCount = acceptResults.filter(r => r.status === 409).length;
 
           if (acceptSuccessCount === 1 && acceptConflictCount === 1) {
-            pass('T13: Concurrent accepts on purchase listing (1 success, 1 conflict)');
+            pass('T20: Concurrent accepts on purchase listing (1 success, 1 conflict)');
           } else {
-            fail('T13: Concurrent accepts on purchase listing', `Expected 1 success + 1 conflict, got ${acceptSuccessCount} success, ${acceptConflictCount} conflict`);
+            fail('T20: Concurrent accepts on purchase listing', `Expected 1 success + 1 conflict, got ${acceptSuccessCount} success, ${acceptConflictCount} conflict`);
           }
         } else {
-          fail('T13: Concurrent accepts on purchase listing', 'Setup failed');
+          fail('T20: Concurrent accepts on purchase listing', 'Setup failed');
         }
       }
     }

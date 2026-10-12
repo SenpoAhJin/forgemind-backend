@@ -580,15 +580,13 @@ listingsRouter.post(
       // Quality gate: check if the text appears to be real words before moderation.
       // Gibberish listings (keyboard mash, repeated characters) fail here and are
       // never stored or moderated.
-      // BYPASS for automated test users (verify-offers-* emails)
-      const isTestUser = caller.email?.includes('verify-offers-');
       const qualityFields = {
         title: input.title,
         description: input.description,
         trade_offered_item: input.trade_offered_item,
         trade_wanted_item: input.trade_wanted_item,
       };
-      const quality = isTestUser ? { ok: true, issues: [] } : checkListingQuality(qualityFields);
+      const quality = checkListingQuality(qualityFields);
       if (!quality.ok) {
         const fields: Record<string, string> = {};
         for (const issue of quality.issues) {
