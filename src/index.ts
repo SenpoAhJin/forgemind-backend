@@ -7,6 +7,7 @@ import { calendarRouter } from './calendar/router';
 import { usersRouter } from './users/router';
 import { marketplaceRouter } from './marketplace/router';
 import photosRouter from './marketplace/photosRouter';
+import offersRouter from './marketplace/offersRouter';
 import { startPhotoCleanup, stopPhotoCleanup } from './marketplace/photoCleanup';
 import { config } from './config';
 import { pool } from './db';
@@ -123,6 +124,11 @@ app.use('/users', usersRouter);
  * Must come before marketplaceRouter (JSON-only middleware incompatible with multipart).
  */
 app.use('/marketplace', photosRouter);
+
+/**
+ * Marketplace offers: create, accept, decline, withdraw structured offers.
+ */
+app.use('/marketplace/offers', offersRouter);
 
 /**
  * Marketplace Registration: cosplayer submits, reads back own registration.
