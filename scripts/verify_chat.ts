@@ -586,7 +586,7 @@ async function runTests() {
           
           // Verify NOT saved to DB (check that no messages exist with this phrase)
           const check = await pool.query(
-            'SELECT body FROM chat_messages WHERE thread_id = $1 ORDER BY created_at DESC LIMIT 1',
+            'SELECT message_text FROM chat_messages WHERE thread_id = $1 ORDER BY created_at DESC LIMIT 1',
             [testThread.thread_id]
           );
           // Since we created a fresh thread, ANY message means it was saved despite 422
