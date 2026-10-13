@@ -16,6 +16,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { compileWord, containsTerm, toTarget, MatchTarget } from '../src/moderation/normalize';
+import { parseCsv } from './lib/csv';
 import { 
   TAGALOG_TRAIN, 
   TAGALOG_VAL, 
@@ -82,35 +83,31 @@ function readEnglishCsv(file: string): EnglishRow[] {
   if (!fs.existsSync(file)) return [];
   
   const content = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
-  const lines = content.split('\n').filter(l => l.trim());
-  const rows: EnglishRow[] = [];
+  const rows = parseCsv(content);
+  const results: EnglishRow[] = [];
   
-  // Skip header
-  for (let i = 1; i < lines.length; i++) {
-    const parts = lines[i].split(',');
-    if (parts.length >= 10) {
-      const clean = parts[4] === '1' ? 1 : (parts[4] === '0' ? 0 : null);
-      const vulgar = parts[5] === '1' ? 1 : (parts[5] === '0' ? 0 : null);
-      const hate = parts[6] === '1' ? 1 : (parts[6] === '0' ? 0 : null);
-      const adult = parts[7] === '1' ? 1 : (parts[7] === '0' ? 0 : null);
-      const prohibited = parts[8] === '1' ? 1 : (parts[8] === '0' ? 0 : null);
-      
-      // Only include rows with valid labels
-      if (clean !== null && vulgar !== null && hate !== null && adult !== null && prohibited !== null) {
-        rows.push({
-          id: parts[0],
-          text: parts[1],
-          clean,
-          vulgar,
-          hate,
-          adult,
-          prohibited
-        });
-      }
+  for (const row of rows) {
+    const clean = row.clean === '1' ? 1 : (row.clean === '0' ? 0 : null);
+    const vulgar = row.vulgar === '1' ? 1 : (row.vulgar === '0' ? 0 : null);
+    const hate = row.hate === '1' ? 1 : (row.hate === '0' ? 0 : null);
+    const adult = row.adult === '1' ? 1 : (row.adult === '0' ? 0 : null);
+    const prohibited = row.prohibited === '1' ? 1 : (row.prohibited === '0' ? 0 : null);
+    
+    // Only include rows with valid labels
+    if (clean !== null && vulgar !== null && hate !== null && adult !== null && prohibited !== null) {
+      results.push({
+        id: row.id,
+        text: row.text,
+        clean,
+        vulgar,
+        hate,
+        adult,
+        prohibited
+      });
     }
   }
   
-  return rows;
+  return results;
 }
 
 function loadBenignMessages(file: string): string[] {

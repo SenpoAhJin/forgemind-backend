@@ -20,9 +20,9 @@
 | train.csv | ✓ | 11,110 | 0:6,413, 1:4,697 | Tagalog/Filipino | text | label: 0=benign, 1=toxic |
 | val.csv | ✓ | 2,778 | 0:1,604, 1:1,174 | Tagalog/Filipino | text | label: 0=benign, 1=toxic |
 | **processed/** |
-| train.csv | ✓ | 688,619 (126,968 labeled) | clean:117,890, toxic:9,078 | English | text | Jigsaw, multi-label, 81% unlabeled |
-| test.csv | ✓ | 288,275 (52,819 labeled) | clean:49,105, toxic:3,714 | English | text | Jigsaw, multi-label, 82% unlabeled |
-| val.csv | ✓ | 234,108 (43,088 labeled) | clean:39,897, toxic:3,191 | English | text | Jigsaw, multi-label, 82% unlabeled |
+| train.csv | ✓ | 399,295 | clean:376,089, toxic:23,206 | English | text | Jigsaw, 100% labeled, RFC4180 parsed |
+| test.csv | ✓ | 166,729 | clean:157,136, toxic:9,593 | English | text | Jigsaw, 100% labeled, RFC4180 parsed |
+| val.csv | ✓ | 136,089 | clean:128,115, toxic:7,974 | English | text | Jigsaw, 100% labeled, RFC4180 parsed |
 | **Block_Words/** |
 | Part1_0a5e31bd.csv | ✓ | 5,987 | class: 0,1,2 | English | text | Hate speech dataset |
 | Part1_0a5e31bd (1).csv | ✓ | 5,987 | class: 0,1,2 | English | text | DUPLICATE of above |
@@ -42,17 +42,20 @@
 - **Label:** 0 = benign, 1 = toxic
 
 ### English Datasets (processed/train.csv, test.csv, val.csv)
-- **Columns:** id, text, field, source, clean, vulgar, hate, adult, prohibited, unrelated
+- **Columns:** id, text, field, source, clean, vulgar, hate, adult, prohibited, unrelated (10 columns)
 - **Source:** Jigsaw Toxic Comments (indicated by id prefix "jigsaw_")
 - **Labels:** 
   - clean=1: benign text
   - toxic: any of (vulgar=1 OR hate=1 OR adult=1 OR prohibited=1)
+  - **Mutually exclusive**: benign and toxic are mutually exclusive (0 overlap rows)
 - **Fixed-seed split:** Deterministic train/test/val split for reproducible measurements
-- **Label Audit Finding:** Most rows have non-numeric label values (e.g., "jigsaw_slice", "description") in label columns, indicating CSV parsing issues or source data format mismatch. Only rows with clean=1/0 and numeric toxic flags are usable.
-  - Train: 688,619 total rows, 126,968 labeled (117,890 benign, 9,078 toxic), 561,651 missing/malformed
-  - Test: 288,275 total rows, 52,819 labeled (49,105 benign, 3,714 toxic), 235,456 missing/malformed
-  - Val: 234,108 total rows, 43,088 labeled (39,897 benign, 3,191 toxic), 191,020 missing/malformed
-- **Strict Definition:** Rows with missing labels are EXCLUDED everywhere, never treated as benign
+- **Parser:** RFC4180-compliant (scripts/lib/csv.ts) handles multiline quoted Jigsaw comments
+- **Corrected counts** (earlier "81% unlabeled" was naive CSV split bug):
+  - Train: 399,295 rows (376,089 clean=1, 23,206 toxic)
+  - Test: 166,729 rows (157,136 clean=1, 9,593 toxic: 9,412 vulgar, 1,199 hate, 0 adult, 0 prohibited; 1,018 vulgar+hate overlap)
+  - Val: 136,089 rows (128,115 clean=1, 7,974 toxic: 7,829 vulgar, 965 hate, 0 adult, 0 prohibited; 820 vulgar+hate overlap)
+- **100% labeled**: All rows have valid numeric 0/1 labels
+- **Toxic categories**: Only vulgar and hate flags present; adult and prohibited always 0. Most toxic is vulgar-only; some have both vulgar+hate.
 
 ### Block_Words (Part1_0a5e31bd.csv)
 - **Columns:** count, hate_speech, offensive_language, neither, class, tweet
