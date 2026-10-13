@@ -703,7 +703,52 @@ async function runTests() {
     console.log(`Cleanup: ${leftover} leftover records`);
     await pool.end();
     
-    process.exit(failed > 0 ? 1 : 0);
+    const finalPassed = passed;
+    const finalFailed = failed;
+    
+    // Run E2E test for curated terms (separate server on port 3999)
+    console.log('\n=== Running Curated Terms E2E Test ===');
+    const e2eResult = await new Promise<{ code: number; passed: number; failed: number }>((resolve) => {
+      const { spawn } = require('child_process');
+      const e2eProcess = spawn('npx', ['tsx', 'scripts/verify_chat_curated_e2e.ts'], {
+        cwd: __dirname + '/..',
+        stdio: 'pipe'
+      });
+      
+      let output = '';
+      
+      e2eProcess.stdout?.on('data', (data: Buffer) => {
+        const text = data.toString();
+        output += text;
+        console.log(text);
+      });
+      
+      e2eProcess.stderr?.on('data', (data: Buffer) => {
+        const text = data.toString();
+        output += text;
+        console.error(text);
+      });
+      
+      e2eProcess.on('close', (code: number) => {
+        // Parse passed/failed from output
+        const passedMatch = /Passed: (\d+)/.exec(output);
+        const failedMatch = /Failed: (\d+)/.exec(output);
+        resolve({
+          code: code || 0,
+          passed: passedMatch ? parseInt(passedMatch[1], 10) : 0,
+          failed: failedMatch ? parseInt(failedMatch[1], 10) : 0
+        });
+      });
+    });
+    
+    const totalPassed = finalPassed + e2eResult.passed;
+    const totalFailed = finalFailed + e2eResult.failed;
+    
+    console.log(`\n=== Combined Results ===`);
+    console.log(`Passed: ${totalPassed} (${finalPassed} chat + ${e2eResult.passed} E2E)`);
+    console.log(`Failed: ${totalFailed} (${finalFailed} chat + ${e2eResult.failed} E2E)`);
+    
+    process.exit((totalFailed > 0 || e2eResult.code !== 0) ? 1 : 0);
   }
 }
 

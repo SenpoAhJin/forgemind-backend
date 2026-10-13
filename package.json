@@ -22,7 +22,9 @@
     "migrate:down": "node scripts/migrate.mjs down",
     "migrate:status": "node scripts/migrate.mjs up --dry-run",
     "seed": "ts-node src/scripts/seed.ts",
-    "chat:curated": "tsx scripts/measure_sarap_mo.ts && tsx scripts/measure_full_impact.ts"
+    "chat:curated": "tsx scripts/measure_sarap_mo.ts && tsx scripts/measure_full_impact.ts",
+    "test:chat": "tsx scripts/verify_chat.ts",
+    "test:chat:e2e": "tsx scripts/verify_chat_curated_e2e.ts"
   },
   "dependencies": {
     "@types/multer": "^2.3.0",

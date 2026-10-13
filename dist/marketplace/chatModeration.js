@@ -46,7 +46,11 @@ const chatBlocklist_1 = require("./chatBlocklist");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 // Compile blocklist once at module load
-const compiled = chatBlocklist_1.CHAT_BLOCKLIST.map(term => (0, normalize_1.compileWord)(term));
+const compiled = chatBlocklist_1.FULL_BLOCKLIST.map(term => (0, normalize_1.compileWord)(term));
+// Log curated terms count at startup (not the terms themselves)
+if (chatBlocklist_1.CURATED_TERMS.length > 0) {
+    console.log(`Chat moderation: Loaded ${chatBlocklist_1.CURATED_TERMS.length} curated term(s)`);
+}
 function screenMessage(body) {
     // R9: Message body is NEVER logged
     const target = (0, normalize_1.toTarget)(body);

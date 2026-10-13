@@ -182,7 +182,7 @@ function startServer(): Promise<void> {
     
     serverProcess.stdout?.on('data', (data) => {
       output += data.toString();
-      if (!resolved && output.includes('Server running on port 3999')) {
+      if (!resolved && output.includes('forgemind-backend listening on')) {
         resolved = true;
         clearTimeout(timeout);
         resolve();
@@ -238,7 +238,7 @@ async function runTests() {
       body: JSON.stringify({ listing_id: listing })
     });
     
-    if (threadRes.status !== 201) {
+    if (threadRes.status !== 200) {
       fail('E2E Setup', `Failed to create thread: ${threadRes.status}`);
       return;
     }
@@ -250,7 +250,7 @@ async function runTests() {
     // STEP 5: Test blocked message (throwaway phrase)
     const blockedRes = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/messages`, buyer.token, {
       method: 'POST',
-      body: JSON.stringify({ message_text: `This contains ${throwawayPhrase} which should block` })
+      body: JSON.stringify({ body: `This contains ${throwawayPhrase} which should block` })
     });
     
     if (blockedRes.status === 422) {
@@ -276,7 +276,7 @@ async function runTests() {
     const benignText = 'This is a completely benign message about the listing';
     const benignRes = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/messages`, buyer.token, {
       method: 'POST',
-      body: JSON.stringify({ message_text: benignText })
+      body: JSON.stringify({ body: benignText })
     });
     
     if (benignRes.status === 201) {
@@ -301,7 +301,20 @@ async function runTests() {
       fail('E2E: Benign message pass', `Expected 201, got ${benignRes.status}`);
     }
     
-    // STEP 7: Verify throwaway file still intact (no corruption)
+    // STEP 7: Test case/spacing variant of phrase
+    const variantText = `This contains E2E TEST HARMFUL  phrase   9Z8Y7X which should also block`;
+    const variantRes = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/messages`, buyer.token, {
+      method: 'POST',
+      body: JSON.stringify({ body: variantText })
+    });
+    
+    if (variantRes.status === 422) {
+      pass('E2E: Case/spacing variant blocked with 422');
+    } else {
+      fail('E2E: Case/spacing variant', `Expected 422, got ${variantRes.status} - matcher may not catch variants`);
+    }
+    
+    // STEP 8: Verify throwaway file still intact (no corruption)
     const fileContent = fs.readFileSync(THROWAWAY_FILE, 'utf8');
     if (fileContent.includes(throwawayPhrase)) {
       pass('E2E: Throwaway file intact');
