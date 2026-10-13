@@ -1,4 +1,4 @@
-Is this still available?
+﻿Is this still available?
 How much is shipping to Manila?
 Can you ship to Cebu?
 Is the wig still available?
@@ -48,3 +48,157 @@ brand new po ba?
 may defect po ba?
 kumpleto po ba?
 pwede po bang pasukat?
+How much po ang shipping?
+Pwede po bang meetup sa Manila?
+Available pa po ba yung item?
+Pwede bang discount kung 2 items?
+May ibang color pa po?
+Paano po ang payment?
+May Gcash po kayo?
+Kelan po pwede pickup?
+Ok lang po ba yung condition?
+Kasya po ba to sa size small?
+Ano po included dito?
+May warranty pa po ba?
+Authentic po ba guarantee?
+Pwede po bang i-reserve?
+How many days po yung shipping?
+Saan po ninyo ise-ship?
+May tracking po ba?
+Firm price na po ba yan?
+Last price na po ba yan?
+Ok na po yan salamat!
+still available?
+price?
+ship to mindanao?
+meetup?
+discount?
+authentic?
+bnew?
+2nd hand?
+used?
+brand?
+original?
+replica?
+nego?
+firm?
+rush?
+RFS?
+why selling?
+pm sent
+check pm
+interested
+mine na
+reserved
+paid
+otw
+received thank you
+salamat po
+thank you po
+ok po
+sige po
+noted po
+wait lang po
+pasend po ng tracking
+nareceive ko na po
+ok naman po yung item
+goods yung quality
+legit seller
+fast shipping
+recommended seller
+5 stars
+positive feedback
+will buy again
+sulit yung price
+maganda yung packaging
+may freebies pa
+complete yung item
+walang damage
+mint condition
+slightly used lang
+barely used
+like new
+good as new
+well maintained
+clean
+no stains
+no defects
+working perfectly
+tested and working
+fully functional
+no issues
+in good condition
+lightly worn
+minimal wear
+gently used
+rarely used
+used once
+tried once
+not used
+unopened
+sealed
+with box
+with receipt
+with papers
+original packaging
+complete set
+with extras
+with freebies
+bundled
+take all
+package deal
+bulk order
+wholesale
+reseller
+for business
+for events
+for cosplay
+for collection
+for display
+for personal use
+for gift
+for daughter
+for son
+for friend
+birthday gift
+christmas gift
+anniversary gift
+graduation gift
+debut gift
+wedding gift
+pasalubong
+souvenir
+collectible
+limited edition
+exclusive
+rare
+vintage
+retro
+classic
+popular
+trending
+in demand
+bestseller
+highly sought
+hard to find
+imported
+from japan
+from korea
+from us
+from china
+local
+made in philippines
+handmade
+custom made
+tailor made
+personalized
+customizable
+ready to ship
+ready stock
+in stock
+pre-order
+made to order
+delivery time
+lead time
+processing time
+waiting time

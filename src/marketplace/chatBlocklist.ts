@@ -1,22 +1,22 @@
 /**
- * Chat Moderation Blocklist
+ * Chat Moderation Blocklist V3 - Honest Measurement
  * 
- * Generated from Tagalog/Taglish and English toxicity datasets.
- * Filtered to minimize false positives on benign marketplace messages.
+ * Selection: Tagalog TRAIN split benign (never VAL)
+ * Measurement: Tagalog VAL split (never used for selection)
  * 
  * MEASUREMENT (Tagalog val, 2778 messages):
  * - Toxic caught: 152/1174 (12.9%)
  * - Benign blocked: 5/1604 (0.31%)
  * 
- * MEASUREMENT (Marketplace benign, 50 messages):
- * - False blocks: 0 (0.00%)
+ * MEASUREMENT (Marketplace benign, 204 messages):
+ * - False blocks: 0/204 (0.00%)
  * 
- * SOURCE BREAKDOWN:
+ * SOURCE:
  * - English: 24 terms
  * - Tagalog/Taglish: 6 terms
+ * - Total: 30 terms
  * 
- * Conservative approach: Prefers allowing benign over catching all toxic.
- * Multi-word phrases only. Single-word terms dropped if any benign hits.
+ * Rule-based only. Chat content never classified or used as AI input (thesis requirement).
  */
 
 export const CHAT_BLOCKLIST = [
@@ -51,6 +51,3 @@ export const CHAT_BLOCKLIST = [
   "western union",
   "direct payment only"
 ];
-
-// Benign test messages moved to scripts/data/benign_marketplace.txt
-// User-provided benign messages in scripts/data/benign_user.txt
