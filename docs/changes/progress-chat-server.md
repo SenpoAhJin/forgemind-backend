@@ -447,11 +447,11 @@ All requirements met. All tests passing. No outstanding issues.
 - Obfuscation: 45% blocked (5/11 simple variants: spaces 33%, punctuation 80%, mixed 0%)
 
 **Current state:**
-- Base terms: 26
+- Base terms: 25 (19 EN, 6 TL)
 - Curated kept: 0
-- Total active: 26
+- Total active: 25
 
-**Baseline measurement (26 base terms, 0 curated):**
+**Baseline measurement (25 base terms, 0 curated):**
 - Tagalog val: 152/1174 toxic (12.95%), 5/1604 benign blocked (0.31%)
 - Marketplace: 0/210 blocked (0.00%)
 
