@@ -365,3 +365,43 @@ if (globalCheck.rows[0].users > 0) {
 **GAPS: 0**
 
 All requirements met. All tests passing. No outstanding issues.
+
+
+## 6. User-Curated Terms (October 13, 2026)
+
+**Purpose:** Allow user to add phrases targeting specific harassment types (sexual comments, threats) without rebuilding the core blocklist.
+
+**Implementation:**
+- File: `scripts/data/chat_curated_terms_kept.txt`
+- Loaded at server startup, combined with existing 25 terms
+- Same matcher logic (`compileWord` + `containsTerm`)
+- Same R10 behavior: 422 blocked, nothing saved/logged
+- File missing/empty → server starts with 0 curated terms (no crash)
+- Reload requires server restart
+
+**Filtering process:**
+1. User writes phrases to `scripts/data/chat_curated_terms.txt`
+2. Run `scripts/filter_curated_phrases.ts` to test against benign sets:
+   - Tagalog TRAIN benign (if available)
+   - Tagalog VAL benign (if available)
+   - Marketplace benign (210 messages)
+   - User benign (user's own messages)
+3. Keep only phrases with 0 hits in ALL sets
+4. Kept phrases written to `chat_curated_terms_kept.txt`
+
+**Current curated terms:** 1
+- "sarap mo" (sexual comment aimed at person)
+
+**Measurement:**
+- Marketplace benign: 0/210 blocked (0.00%) - NO INCREASE ✅
+- Obfuscation resistance: 1/3 obfuscations blocked
+
+**Tools:**
+- `scripts/filter_curated_phrases.ts` - Benign filter for new phrases
+- `scripts/measure_curated_impact.ts` - Before/after metrics
+
+**Testing:** Tests added to `scripts/verify_chat.ts` to verify:
+- Curated phrases return 422
+- Not saved to DB
+- Benign messages with shared single words pass
+- Missing file doesn't crash server
