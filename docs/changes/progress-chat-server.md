@@ -69,7 +69,72 @@ Term ID 7: 1 false block (English)
 
 **Decision:** Rule-based only. Chat moderation uses blocklist (no classifier). Thesis requirement: chat content never classified or used as AI input.
 
-## 5. Test Results
+## 5. Test Results (Final Verification - Oct 13, 2026)
+
+**TypeScript:** `npx tsc --noEmit` exit 0
+
+**Chat verification (48/48 PASS, 0 leftover):**
+
+| Test | Status |
+|------|--------|
+| Gap1: POST /threads 401 without token | ✓ PASS |
+| Gap1: GET /threads 401 without token | ✓ PASS |
+| Gap1: GET /threads/:id 401 without token | ✓ PASS |
+| Gap1: POST /messages 401 without token | ✓ PASS |
+| Gap1: POST /close 401 without token | ✓ PASS |
+| Gap1: POST /read 401 without token | ✓ PASS |
+| Gap1: GET /unread-count 401 without token | ✓ PASS |
+| R1: Unverified user rejected from POST /threads | ✓ PASS |
+| R3: Seller cannot start thread on own listing | ✓ PASS |
+| R4: Create thread on active listing succeeds | ✓ PASS |
+| R8: No email in POST /threads response | ✓ PASS |
+| R4: Cannot create thread on inactive listing | ✓ PASS |
+| R11: Malformed listing_id returns 400 | ✓ PASS |
+| Gap2: GET unknown thread 404 | ✓ PASS |
+| Gap2: POST message unknown thread 404 | ✓ PASS |
+| Gap2: POST close unknown thread 404 | ✓ PASS |
+| Gap2: POST read unknown thread 404 | ✓ PASS |
+| Gap2: GET malformed thread 400 | ✓ PASS |
+| Gap2: POST message malformed 400 | ✓ PASS |
+| Gap2: POST close malformed 400 | ✓ PASS |
+| Gap2: POST read malformed 400 | ✓ PASS |
+| Gap5: Spaces-only body rejected | ✓ PASS |
+| Gap5: Padded body saved trimmed | ✓ PASS |
+| R7: Send valid message succeeds | ✓ PASS |
+| R7: Body >1000 chars rejected | ✓ PASS |
+| Gap7: R9 Blocked message body not logged | ✓ PASS |
+| Gap6: R10 Blocked response has no term/hint/score | ✓ PASS |
+| R10: Blocked message not saved to DB | ✓ PASS |
+| Gap7: R9 Valid message body not logged | ✓ PASS |
+| Benign messages pass (210/210 including Tagalog/Taglish) | ✓ PASS |
+| R2: Non-participant cannot GET thread | ✓ PASS |
+| R2: Non-participant cannot POST message | ✓ PASS |
+| Gap3: R2 Non-participant cannot close | ✓ PASS |
+| Gap3: R2 Non-participant cannot read | ✓ PASS |
+| R2: Seller (participant) can GET thread | ✓ PASS |
+| Gap4: No email in GET /threads/:id response | ✓ PASS |
+| R2: Buyer (participant) can GET thread | ✓ PASS |
+| Gap4: No email in GET /threads list response | ✓ PASS |
+| Unread count rises after message sent | ✓ PASS |
+| Gap4: No email in GET /unread-count response | ✓ PASS |
+| Unread count clears after read | ✓ PASS |
+| R6: Close thread succeeds | ✓ PASS |
+| R6: Closed thread refuses sending | ✓ PASS |
+| R5: Inactive listing refuses sending | ✓ PASS |
+| R5: Inactive listing reads as closed (listing_unavailable) | ✓ PASS |
+| R12: All SQL parameterized (code inspection) | ✓ PASS |
+| Concurrent get-or-create returns one thread | ✓ PASS |
+| GET /threads returns thread list | ✓ PASS |
+
+**Runner totals:** Passed: 48, Failed: 0, Cleanup: 0 leftover records
+
+**Regression (20/20 PASS, 0 leftover):**
+- T1-T20: All marketplace offers tests passed
+- Leftover offers: 0, listings: 0, users: 0
+
+**Chat leftovers:** 0 verify-chat-% users
+
+## 6. Test Results (Pre-Final - For Reference)
 
 **TypeScript:** exit 0
 
@@ -273,15 +338,30 @@ if (globalCheck.rows[0].users > 0) {
 }
 ```
 
-## 11. Changes Summary
+## 11. Changes Summary (Final)
+
+**Branch:** feature/chat-server (7 commits from base)
 
 **Files modified:**
 - scripts/data/benign_marketplace.txt: 50 → 210 messages (204 restored + 6 payment method benign)
-- scripts/build-chat-blocklist-v3.ts: UPDATED (removed 5 scam terms from candidates)
-- src/marketplace/chatBlocklist.ts: regenerated (30 → 25 terms)
-- scripts/measure-english-chat.ts: NEW
-- docs/changes/progress-chat-server.md: updated
+- scripts/build-chat-blocklist-v3.ts: NEW (honest measurement, multi-word policy documented)
+- src/marketplace/chatBlocklist.ts: regenerated (25 terms final, no scam terms)
+- scripts/measure-english-chat.ts: NEW (English dataset measurement)
+- scripts/query-leftovers.ts: NEW (verify_offers accumulation diagnosis)
+- scripts/test-benign-payment.ts: NEW (payment message validation)
+- docs/changes/progress-chat-server.md: comprehensive final report
+
+**Commits:**
+1. 833ddac: docs(chat): document multi-word exception policy and trade-offs
+2. 4668b49: feat(chat): add English dataset measurement - 14.7% caught, 0.06% false blocks
+3. a7ef5cd: feat(chat): remove 5 scam/payment terms, add 6 benign payment messages - 25 terms final
+4. e7a5863: docs(chat): diagnose verify_offers leftover accumulation - 40 users from incomplete cleanup
+5. 3f2b24c: test(chat): add benign payment verification, update leftover query for chat
 
 **Methodology:** Selection uses TRAIN, measurement uses VAL (never circular)
 
+**Final blocklist:** 25 terms (19 English, 6 Tagalog/Taglish)
+
 **GAPS: 0**
+
+All requirements met. All tests passing. No outstanding issues.
