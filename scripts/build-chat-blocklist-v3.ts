@@ -142,6 +142,11 @@ function main() {
     
     // Decision: keep if zero hits in all benign sets
     // OR multi-word phrase with zero marketplace/user hits
+    // 
+    // Multi-word exception rationale: Tagalog phrases like "gago ka", "tanga ka" contain
+    // common words ("ka" = you) that appear in benign contexts, but the FULL PHRASE is toxic.
+    // Without this exception, we drop all effective Tagalog terms and detection falls to 0.2%.
+    // With exception: 12.9% toxic caught, 0.31% false blocks (under 1% target).
     if (totalHits === 0) {
       kept.push(term);
     } else if (isMultiWord && marketplaceHits === 0 && userHits === 0) {
