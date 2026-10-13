@@ -1,0 +1,5 @@
+# User-curated chat moderation phrases
+# One phrase per line. Multi-word preferred.
+# Sexual comments, threats, harassment aimed at other person.
+
+sarap mo

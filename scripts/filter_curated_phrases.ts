@@ -1,0 +1,162 @@
+/**
+ * Filter curated phrases against benign sets
+ * 
+ * For each phrase in chat_curated_terms.txt, test against:
+ * - Tagalog TRAIN benign
+ * - Tagalog VAL benign  
+ * - Marketplace benign (scripts/data/benign_marketplace.txt)
+ * - User benign (scripts/data/benign_user.txt)
+ * 
+ * Keep only phrases with 0 hits in ALL four sets.
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+import { compileWord, containsTerm, toTarget } from '../src/moderation/normalize';
+
+// Load phrases
+const curatedFile = path.join(__dirname, 'data', 'chat_curated_terms.txt');
+const phrases = fs.readFileSync(curatedFile, 'utf8')
+  .split('\n')
+  .map(line => line.trim())
+  .filter(line => line && !line.startsWith('#'));
+
+console.log(`\nLoaded ${phrases.length} curated phrases\n`);
+
+// Load benign sets
+function loadLines(filename: string): string[] {
+  const file = path.join(__dirname, filename);
+  if (!fs.existsSync(file)) {
+    console.log(`Warning: ${filename} not found, treating as empty`);
+    return [];
+  }
+  return fs.readFileSync(file, 'utf8')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'));
+}
+
+// Load Tagalog datasets from same location as build script
+const DATASETS_DIR = path.resolve(__dirname, '..', '..', 'forgemind-ai', 'marketplace_datasets');
+
+function readCsv(filepath: string): string[] {
+  if (!fs.existsSync(filepath)) {
+    console.log(`Warning: ${filepath} not found`);
+    return [];
+  }
+  const content = fs.readFileSync(filepath, 'utf8');
+  const lines = content.split('\n').slice(1); // Skip header
+  return lines
+    .map(line => {
+      const match = line.match(/^[^,]*,[^,]*,"([^"]*)"/);
+      return match ? match[1] : '';
+    })
+    .filter(text => text.trim());
+}
+
+const tagalogTrain = readCsv(path.join(DATASETS_DIR, 'Tagalog_Datasets', 'train.csv'));
+const tagalogVal = readCsv(path.join(DATASETS_DIR, 'Tagalog_Datasets', 'val.csv'));
+
+const marketplaceBenign = loadLines('data/benign_marketplace.txt');
+const userBenign = loadLines('data/benign_user.txt');
+
+console.log(`Benign set sizes:`);
+console.log(`  Tagalog TRAIN: ${tagalogTrain.length}`);
+console.log(`  Tagalog VAL: ${tagalogVal.length}`);
+console.log(`  Marketplace: ${marketplaceBenign.length}`);
+console.log(`  User: ${userBenign.length}\n`);
+
+// Test each phrase
+interface Result {
+  phrase: string;
+  trainHits: number;
+  valHits: number;
+  marketplaceHits: number;
+  userHits: number;
+  kept: boolean;
+  reason: string;
+}
+
+const results: Result[] = [];
+
+for (const phrase of phrases) {
+  const compiled = compileWord(phrase);
+  const wordCount = phrase.split(/\s+/).length;
+  
+  const trainHits = tagalogTrain.filter(msg => containsTerm(toTarget(msg), compiled)).length;
+  const valHits = tagalogVal.filter(msg => containsTerm(toTarget(msg), compiled)).length;
+  const marketplaceHits = marketplaceBenign.filter(msg => containsTerm(toTarget(msg), compiled)).length;
+  const userHits = userBenign.filter(msg => containsTerm(toTarget(msg), compiled)).length;
+  
+  const totalHits = trainHits + valHits + marketplaceHits + userHits;
+  const singleWord = wordCount === 1;
+  
+  let kept = false;
+  let reason = '';
+  
+  if (totalHits === 0) {
+    if (singleWord) {
+      kept = true;
+      reason = 'Single-word, 0 hits everywhere (see note)';
+    } else {
+      kept = true;
+      reason = 'Multi-word, 0 hits everywhere';
+    }
+  } else {
+    kept = false;
+    reason = `Hits benign: train=${trainHits} val=${valHits} marketplace=${marketplaceHits} user=${userHits}`;
+  }
+  
+  results.push({
+    phrase,
+    trainHits,
+    valHits,
+    marketplaceHits,
+    userHits,
+    kept,
+    reason
+  });
+}
+
+// Print results table
+console.log('PHRASE FILTERING RESULTS\n');
+console.log('ID | Phrase | Train | Val | Marketplace | User | Kept | Reason');
+console.log('---|--------|-------|-----|-------------|------|------|-------');
+
+const singleWordKept: string[] = [];
+
+results.forEach((r, i) => {
+  const id = `P${i + 1}`;
+  const kept = r.kept ? 'Y' : 'N';
+  console.log(`${id} | "${r.phrase}" | ${r.trainHits} | ${r.valHits} | ${r.marketplaceHits} | ${r.userHits} | ${kept} | ${r.reason}`);
+  
+  if (r.kept && r.phrase.split(/\s+/).length === 1) {
+    singleWordKept.push(r.phrase);
+  }
+});
+
+const keptPhrases = results.filter(r => r.kept);
+const keptFile = path.join(__dirname, 'data', 'chat_curated_terms_kept.txt');
+
+console.log(`\n\nSUMMARY:`);
+console.log(`  Total phrases: ${phrases.length}`);
+console.log(`  Kept: ${keptPhrases.length}`);
+console.log(`  Rejected: ${results.length - keptPhrases.length}`);
+
+if (singleWordKept.length > 0) {
+  console.log(`\n  Single-word phrases kept (0 hits everywhere): ${singleWordKept.length}`);
+  singleWordKept.forEach(p => console.log(`    - "${p}"`));
+}
+
+// Write kept phrases to file
+const keptContent = [
+  '# Curated chat phrases - KEPT (passed benign filter)',
+  '# Generated by scripts/filter_curated_phrases.ts',
+  '',
+  ...keptPhrases.map(r => r.phrase)
+].join('\n') + '\n';
+
+fs.writeFileSync(keptFile, keptContent, 'utf8');
+console.log(`\n  Kept phrases written to: ${path.relative(process.cwd(), keptFile)}`);
+
+process.exit(0);
