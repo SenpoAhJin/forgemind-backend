@@ -20,9 +20,9 @@
 | train.csv | ✓ | 11,110 | 0:6,413, 1:4,697 | Tagalog/Filipino | text | label: 0=benign, 1=toxic |
 | val.csv | ✓ | 2,778 | 0:1,604, 1:1,174 | Tagalog/Filipino | text | label: 0=benign, 1=toxic |
 | **processed/** |
-| train.csv | ✓ | 691,011 | clean:376,089, toxic:23,206 | English | text | Jigsaw, multi-label |
-| test.csv | ✓ | 289,154 | clean:157,136, toxic:9,593 | English | text | Jigsaw, multi-label |
-| val.csv | ✓ | 234,906 | clean:128,115, toxic:7,974 | English | text | Jigsaw, multi-label |
+| train.csv | ✓ | 688,619 (126,968 labeled) | clean:117,890, toxic:9,078 | English | text | Jigsaw, multi-label, 81% unlabeled |
+| test.csv | ✓ | 288,275 (52,819 labeled) | clean:49,105, toxic:3,714 | English | text | Jigsaw, multi-label, 82% unlabeled |
+| val.csv | ✓ | 234,108 (43,088 labeled) | clean:39,897, toxic:3,191 | English | text | Jigsaw, multi-label, 82% unlabeled |
 | **Block_Words/** |
 | Part1_0a5e31bd.csv | ✓ | 5,987 | class: 0,1,2 | English | text | Hate speech dataset |
 | Part1_0a5e31bd (1).csv | ✓ | 5,987 | class: 0,1,2 | English | text | DUPLICATE of above |
@@ -48,6 +48,11 @@
   - clean=1: benign text
   - toxic: any of (vulgar=1 OR hate=1 OR adult=1 OR prohibited=1)
 - **Fixed-seed split:** Deterministic train/test/val split for reproducible measurements
+- **Label Audit Finding:** Most rows have non-numeric label values (e.g., "jigsaw_slice", "description") in label columns, indicating CSV parsing issues or source data format mismatch. Only rows with clean=1/0 and numeric toxic flags are usable.
+  - Train: 688,619 total rows, 126,968 labeled (117,890 benign, 9,078 toxic), 561,651 missing/malformed
+  - Test: 288,275 total rows, 52,819 labeled (49,105 benign, 3,714 toxic), 235,456 missing/malformed
+  - Val: 234,108 total rows, 43,088 labeled (39,897 benign, 3,191 toxic), 191,020 missing/malformed
+- **Strict Definition:** Rows with missing labels are EXCLUDED everywhere, never treated as benign
 
 ### Block_Words (Part1_0a5e31bd.csv)
 - **Columns:** count, hate_speech, offensive_language, neither, class, tweet
