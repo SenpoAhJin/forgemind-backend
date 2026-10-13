@@ -1,44 +1,25 @@
 import { pool } from '../src/db';
 
 async function main() {
-  console.log('=== VERIFY-OFFERS LEFTOVERS ANALYSIS ===\n');
+  console.log('=== CHAT LEFTOVER COUNTS ===\n');
   
-  // Users by date
-  const usersResult = await pool.query(`
-    SELECT DATE(created_at) as date, COUNT(*) as count
-    FROM users
-    WHERE email LIKE 'verify-offers-%'
-    GROUP BY DATE(created_at)
-    ORDER BY date
+  const users = await pool.query(`SELECT COUNT(*) FROM users WHERE email LIKE 'verify-chat-%'`);
+  console.log(`verify-chat users: ${users.rows[0].count}`);
+  
+  const threads = await pool.query(`
+    SELECT COUNT(*) FROM chat_threads 
+    WHERE thread_id IN (
+      SELECT DISTINCT thread_id FROM chat_messages 
+      WHERE sender_id IN (SELECT user_id FROM users WHERE email LIKE 'verify-chat-%')
+    )
   `);
+  console.log(`chat threads: ${threads.rows[0].count}`);
   
-  console.log('Users with email LIKE verify-offers-%:');
-  for (const row of usersResult.rows) {
-    console.log(`  ${row.date}: ${row.count} users`);
-  }
-  const totalUsers = usersResult.rows.reduce((sum: number, r: any) => sum + parseInt(r.count), 0);
-  console.log(`  Total: ${totalUsers}\n`);
-  
-  // Listings count (by seller_user_id)
-  const listingsResult = await pool.query(`
-    SELECT COUNT(*) as count
-    FROM listings l
-    JOIN users u ON l.seller_user_id = u.user_id
-    WHERE u.email LIKE 'verify-offers-%'
+  const messages = await pool.query(`
+    SELECT COUNT(*) FROM chat_messages 
+    WHERE sender_id IN (SELECT user_id FROM users WHERE email LIKE 'verify-chat-%')
   `);
-  
-  console.log(`Listings owned by verify-offers-% users: ${listingsResult.rows[0].count}\n`);
-  
-  // Offers count
-  const offersResult = await pool.query(`
-    SELECT COUNT(*) as count
-    FROM structured_offers so
-    JOIN listings l ON so.listing_id = l.listing_id
-    JOIN users u ON l.seller_user_id = u.user_id
-    WHERE u.email LIKE 'verify-offers-%'
-  `);
-  
-  console.log(`Offers for those listings: ${offersResult.rows[0].count}\n`);
+  console.log(`chat messages: ${messages.rows[0].count}`);
   
   await pool.end();
 }
