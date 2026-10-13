@@ -202,3 +202,11 @@ delivery time
 lead time
 processing time
 waiting time
+
+# Benign payment method mentions (not scams, just stating available methods)
+GCash only po, send screenshot after
+Accepted: bank transfer or meet-up
+Western union ok, DM for details
+Payment: GCash, Paymaya, or bank deposit
+I can do bank transfer if you prefer
+Western Union available, let me know

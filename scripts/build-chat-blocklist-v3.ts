@@ -84,13 +84,6 @@ const CANDIDATE_TERMS = [
   'suck my',
   'fuck me',
   'wanna fuck',
-  
-  // Scam/fraud
-  'send money first',
-  'payment outside platform',
-  'bank transfer only',
-  'western union',
-  'direct payment only',
 ];
 
 function main() {

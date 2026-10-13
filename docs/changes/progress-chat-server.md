@@ -13,21 +13,23 @@
 
 **Where 154 messages went:** They were in the original build-chat-blocklist.ts (commit a7f22c1) but not migrated to separate benign_marketplace.txt file in V2. Now restored.
 
-## 2. Moderation Results (Honest)
+## 2. Moderation Results (Final - No Scam Terms)
 
 **Selection phase (Tagalog TRAIN only):**
 ```
-Candidates: 37
-Kept: 30
+Candidates: 32
+Kept: 25
 Dropped: 7 (terms with hits in train benign)
 ```
 
-**Measurement phase (Tagalog VAL only, never used for selection):**
+**Removed 5 scam/payment terms:** Not effective for chat harassment, caused potential for false blocks on legitimate payment method discussions.
+
+**Measurement phase (all datasets):**
 
 | Dataset | Toxic Caught | Benign Blocked (FALSE) |
 |---------|--------------|------------------------|
 | Tagalog val (2,778 msg) | 152/1174 (12.9%) | 5/1604 (0.31%) ✓ |
-| Marketplace benign (204 msg) | N/A | 0/204 (0.00%) ✓ |
+| Marketplace benign (210 msg) | N/A | 0/210 (0.00%) ✓ |
 | English test (12,903 msg) | 222/1510 (14.7%) | 7/11,393 (0.06%) ✓ |
 | User benign | 0 messages | N/A |
 
@@ -57,9 +59,13 @@ Term ID 7: 1 false block (English)
 ## 4. Final Blocklist
 
 **Count by language:**
-- English: 24 terms
+- English: 19 terms
 - Tagalog/Taglish: 6 terms
-- **Total: 30 terms**
+- **Total: 25 terms**
+
+**Removed:** 5 scam/payment terms (send money first, payment outside platform, bank transfer only, western union, direct payment only)
+
+**Added 6 benign payment messages** to test corpus (GCash, bank transfer, Western Union mentions in legitimate context - all passed)
 
 **Decision:** Rule-based only. Chat moderation uses blocklist (no classifier). Thesis requirement: chat content never classified or used as AI input.
 
@@ -222,9 +228,10 @@ Leftover users: 0
 ## 9. Changes Summary
 
 **Files modified:**
-- scripts/data/benign_marketplace.txt: 50 → 204 messages (restored)
-- scripts/build-chat-blocklist-v3.ts: NEW (honest measurement)
-- src/marketplace/chatBlocklist.ts: regenerated with honest methodology
+- scripts/data/benign_marketplace.txt: 50 → 210 messages (204 restored + 6 payment method benign)
+- scripts/build-chat-blocklist-v3.ts: UPDATED (removed 5 scam terms from candidates)
+- src/marketplace/chatBlocklist.ts: regenerated (30 → 25 terms)
+- scripts/measure-english-chat.ts: NEW
 - docs/changes/progress-chat-server.md: updated
 
 **Methodology:** Selection uses TRAIN, measurement uses VAL (never circular)
