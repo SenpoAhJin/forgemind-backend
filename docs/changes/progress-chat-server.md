@@ -409,7 +409,7 @@ All requirements met. All tests passing. No outstanding issues.
 
 ## 7. Curated Terms (User-Supplied Phrases)
 
-**Purpose:** Allow users to add custom phrases to chat moderation blocklist beyond the 26 base terms.
+**Purpose:** Allow users to add custom phrases to chat moderation blocklist beyond the 25 base terms.
 
 **Workflow:**
 1. User edits `scripts/data/chat_curated_terms.txt` (one phrase per line)
@@ -426,12 +426,14 @@ All requirements met. All tests passing. No outstanding issues.
 - Output: `scripts/data/chat_curated_terms_kept.txt` (generated, server loads this)
 - Scripts: `measure_sarap_mo.ts`, `measure_full_impact.ts`
 - NPM: `npm run chat:curated` runs both measurement scripts
+- Paths: `scripts/lib/datasetPaths.ts` (centralized dataset resolver)
 
 **Server behavior:**
 - Loads curated terms from `chat_curated_terms_kept.txt` at startup (chatBlocklist.ts)
 - Missing/empty file → server starts with 0 curated terms (no crash)
 - File changes require server restart (no hot reload)
-- Curated terms logged at startup: "Loaded N curated term(s)"
+- Startup log: "[chat-filter] Base terms: 25 (19 EN, 6 TL), curated loaded: N"
+- Warns if input file is newer than kept file (staleness check)
 
 **Validation criteria:**
 - Tagalog TRAIN benign: 0 hits
@@ -455,10 +457,21 @@ All requirements met. All tests passing. No outstanding issues.
 - Tagalog val: 152/1174 toxic (12.95%), 5/1604 benign blocked (0.31%)
 - Marketplace: 0/210 blocked (0.00%)
 
-**Test results (Oct 13, 2026 17:50):**
+**Datasets (Oct 13, 2026):**
+- Location: `../forgemind-ai/marketplace_datasets` (sibling to forgemind-backend)
+- Tagalog train: 11,110 rows (6,413 benign, 4,697 toxic)
+- Tagalog val: 2,778 rows (1,604 benign, 1,174 toxic)
+- English datasets: NOT PRESENT (no English_Datasets folder exists)
+- Benign marketplace: 210 messages
+- Inventory: `docs/changes/dataset-inventory.md`
+
+**Test results (Oct 13, 2026 18:25):**
 - TypeScript: `npx tsc --noEmit` exit 0
 - Chat verification: 50/50 PASS, 0 leftover
 - Offers regression: 20/20 PASS, 0 leftover
 - Baseline leftovers: verify-chat-% 0, verify-offers-% 40 (historical Oct 11-12)
+- Startup log verified: shows base/curated counts, no phrase text
 
-**Session:** Oct 13, 2026 17:20-17:50 (30 minutes)
+**Sessions:**
+- Oct 13, 2026 17:20-17:50: Initial curated implementation (30 min)
+- Oct 13, 2026 18:00-18:25: Dataset paths, reconciliation, startup logging (25 min)
