@@ -225,7 +225,55 @@ Leftover users: 0
 
 **Trade-off accepted:** 0.31% false blocks to maintain viable Tagalog harassment detection
 
-## 9. Changes Summary
+## 10. Leftover Accumulation Diagnosis (verify_offers.ts)
+
+**Current state (Oct 12):**
+- 40 users with email LIKE 'verify-offers-%' (12 from Oct 11, 28 from Oct 12)
+- 3 listings owned by those users
+- 0 offers
+
+**Analysis of verify_offers.ts cleanup code:**
+
+1. **Does it delete users?** YES (lines 194-199)
+   ```typescript
+   if (createdUserIds.length > 0) {
+     const userResult = await client.query(
+       'DELETE FROM users WHERE user_id = ANY($1::uuid[])',
+       [createdUserIds],
+     );
+   }
+   ```
+
+2. **Does leftover check count all verify-offers users?** NO (lines 201-222)
+   - Check only verifies IDs created in THIS run (`createdUserIds`, `createdListingIds`, `createdOfferIds`)
+   - Reports "0/0/0 leftover" because it only checks test data from current execution
+   - Does NOT detect accumulation from previous runs
+
+3. **How did 40 users accumulate?**
+   - Each run creates users but cleanup may fail if:
+     - Script interrupted before cleanup phase
+     - Transaction rollback doesn't reach user deletion
+     - Foreign key constraints block deletion
+   - Leftover check passes because it only validates current run's IDs
+
+4. **Does each run add users?** Likely YES if cleanup phase not reached
+
+**Proposed fix (DO NOT APPLY):**
+Add global leftover check after run-specific check:
+```typescript
+// After existing leftover check, add:
+const globalCheck = await client.query(
+  `SELECT COUNT(*) as users FROM users WHERE email LIKE 'verify-offers-%'
+   UNION ALL
+   SELECT COUNT(*) FROM listings l JOIN users u ON l.seller_user_id = u.user_id 
+   WHERE u.email LIKE 'verify-offers-%'`
+);
+if (globalCheck.rows[0].users > 0) {
+  console.warn(`WARNING: ${globalCheck.rows[0].users} verify-offers users remain from prior runs`);
+}
+```
+
+## 11. Changes Summary
 
 **Files modified:**
 - scripts/data/benign_marketplace.txt: 50 → 210 messages (204 restored + 6 payment method benign)
