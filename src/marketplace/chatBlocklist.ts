@@ -58,11 +58,15 @@ export const CHAT_BLOCKLIST = [
  * Lines starting with # are comments and ignored.
  * 
  * Logs term counts at startup and warns if input file is newer than kept file.
+ * 
+ * Supports CHAT_CURATED_FILE env var to override path (for E2E tests with throwaway files).
  */
 function loadCuratedTerms(): string[] {
   try {
     const scriptDir = path.join(__dirname, '..', '..', 'scripts', 'data');
-    const keptFile = path.join(scriptDir, 'chat_curated_terms_kept.txt');
+    
+    // Allow env override for E2E tests
+    const keptFile = process.env.CHAT_CURATED_FILE || path.join(scriptDir, 'chat_curated_terms_kept.txt');
     const inputFile = path.join(scriptDir, 'chat_curated_terms.txt');
     
     if (!fs.existsSync(keptFile)) {
@@ -75,8 +79,8 @@ function loadCuratedTerms(): string[] {
       .map(line => line.trim())
       .filter(line => line && !line.startsWith('#'));
     
-    // Check staleness
-    if (fs.existsSync(inputFile)) {
+    // Check staleness (skip if using env override)
+    if (!process.env.CHAT_CURATED_FILE && fs.existsSync(inputFile)) {
       const keptStat = fs.statSync(keptFile);
       const inputStat = fs.statSync(inputFile);
       
