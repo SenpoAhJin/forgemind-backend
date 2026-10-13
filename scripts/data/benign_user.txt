@@ -1,0 +1,3 @@
+# User-provided benign messages for chat moderation testing
+# Add one message per line
+# Lines starting with # are ignored

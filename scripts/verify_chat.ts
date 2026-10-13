@@ -10,7 +10,7 @@
 import { Pool } from 'pg';
 import { config as loadEnv } from 'dotenv';
 import { createHash } from 'crypto';
-import { BENIGN_TEST_SET } from '../src/marketplace/chatModeration';
+import { BENIGN_TEST_SET, BENIGN_USER_SET } from '../src/marketplace/chatModeration';
 import { CHAT_BLOCKLIST } from '../src/marketplace/chatBlocklist';
 
 loadEnv();

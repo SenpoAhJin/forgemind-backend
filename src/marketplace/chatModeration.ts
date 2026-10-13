@@ -1,39 +1,35 @@
 /**
- * Chat Message Moderation (send-time only)
+ * Chat Moderation - Send-time screening only
  * 
- * Screens chat messages before saving. Blocked messages return 422 and are never
- * stored or logged. Chat content is NEVER used for training or stored for analysis.
- * 
- * Conservative blocklist: prefers allowing benign messages over catching everything.
- * Measured: 0% false blocks on marketplace benign test set (204 messages).
+ * Rule-based blocklist check. Message bodies are NEVER logged, scored, or used as AI input.
+ * Benign test messages loaded from separate files for verification.
  */
 
-import { normalizeText, SQUASH_MIN, compileWord, containsTerm, toTarget } from '../moderation/normalize';
-import { CHAT_BLOCKLIST, BENIGN_TEST_MESSAGES } from './chatBlocklist';
+import { compileWord, containsTerm, toTarget } from '../moderation/normalize';
+import { CHAT_BLOCKLIST } from './chatBlocklist';
+import * as fs from 'fs';
+import * as path from 'path';
 
-/** Compiled blocklist with normalized forms */
-const COMPILED_BLOCKLIST = CHAT_BLOCKLIST.map(term => compileWord(term));
+// Compile blocklist once at module load
+const compiled = CHAT_BLOCKLIST.map(term => compileWord(term));
 
-/**
- * Checks if message contains blocked terms.
- * 
- * Returns the first matched term if blocked, null if clean.
- * Never logs the message body.
- */
-export function screenMessage(body: string): { blocked: boolean; term?: string } {
+export function screenMessage(body: string): { blocked: boolean } {
+  // R9: Message body is NEVER logged
   const target = toTarget(body);
-  
-  for (let i = 0; i < COMPILED_BLOCKLIST.length; i++) {
-    if (containsTerm(target, COMPILED_BLOCKLIST[i])) {
-      return { blocked: true, term: CHAT_BLOCKLIST[i] };
-    }
-  }
-  
-  return { blocked: false };
+  const blocked = compiled.some(term => containsTerm(target, term));
+  return { blocked };
 }
 
-/**
- * Benign test messages that MUST pass (includes Tagalog/Taglish).
- * Used for regression testing.
- */
-export const BENIGN_TEST_SET = BENIGN_TEST_MESSAGES;
+// Load benign test messages from files (for verification only, not used in screening)
+function loadBenignMessages(filename: string): string[] {
+  const file = path.join(__dirname, '..', '..', 'scripts', 'data', filename);
+  if (!fs.existsSync(file)) return [];
+  const content = fs.readFileSync(file, 'utf8');
+  return content
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'));
+}
+
+export const BENIGN_TEST_SET = loadBenignMessages('benign_marketplace.txt');
+export const BENIGN_USER_SET = loadBenignMessages('benign_user.txt');
