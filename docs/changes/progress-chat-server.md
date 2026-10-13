@@ -405,3 +405,51 @@ All requirements met. All tests passing. No outstanding issues.
 - Not saved to DB
 - Benign messages with shared single words pass
 - Missing file doesn't crash server
+
+
+## 7. Curated Terms (User-Supplied Phrases)
+
+**Purpose:** Allow users to add custom phrases to chat moderation blocklist beyond the 26 base terms.
+
+**Workflow:**
+1. User edits `scripts/data/chat_curated_terms.txt` (one phrase per line)
+2. Run `npm run chat:curated` to validate phrases:
+   - Tests each phrase against ALL benign datasets (Tagalog train, Tagalog val, marketplace, user)
+   - PASS criteria: 0 hits in ALL benign sets
+   - Phrases with ANY benign hit are automatically dropped
+3. Script updates `scripts/data/chat_curated_terms_kept.txt` with validated phrases
+4. Restart server to load new phrases from kept file
+5. Server combines base + curated into `FULL_BLOCKLIST` at startup
+
+**Files:**
+- Input: `scripts/data/chat_curated_terms.txt` (user-editable)
+- Output: `scripts/data/chat_curated_terms_kept.txt` (generated, server loads this)
+- Scripts: `measure_sarap_mo.ts`, `measure_full_impact.ts`
+- NPM: `npm run chat:curated` runs both measurement scripts
+
+**Server behavior:**
+- Loads curated terms from `chat_curated_terms_kept.txt` at startup (chatBlocklist.ts)
+- Missing/empty file → server starts with 0 curated terms (no crash)
+- File changes require server restart (no hot reload)
+- Curated terms logged at startup: "Loaded N curated term(s)"
+
+**Validation criteria:**
+- Tagalog TRAIN benign: 0 hits
+- Tagalog VAL benign: 0 hits
+- Marketplace benign: 0 hits
+- User benign: 0 hits
+
+**Test case: "sarap mo"**
+- Phrase tested: Sexual comment aimed at person (user reported as delivered harassment)
+- Result: **FAILED** - 2 false positives in Tagalog train benign
+- Decision: Phrase dropped automatically (appears in legitimate contexts like "sarap mo kausap" = you're nice to talk to)
+- Measurement: 4 train toxic + 3 val toxic hits = does catch harassment, but too high false positive risk
+
+**Current state:**
+- Base terms: 26
+- Curated kept: 0
+- Total active: 26
+
+**Baseline measurement (26 base terms, 0 curated):**
+- Tagalog val: 152/1174 toxic (12.95%), 5/1604 benign blocked (0.31%)
+- Marketplace: 0/210 blocked (0.00%)
