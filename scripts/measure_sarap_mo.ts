@@ -14,10 +14,8 @@
 import fs from 'fs';
 import path from 'path';
 import { compileWord, containsTerm, toTarget } from '../src/moderation/normalize';
+import { TAGALOG_TRAIN, TAGALOG_VAL, BENIGN_MARKETPLACE, BENIGN_USER } from './lib/datasetPaths';
 
-const DATASETS_DIR = path.resolve(__dirname, '..', '..', 'forgemind-ai', 'marketplace_datasets');
-const BENIGN_MARKETPLACE_FILE = path.resolve(__dirname, 'data', 'benign_marketplace.txt');
-const BENIGN_USER_FILE = path.resolve(__dirname, 'data', 'benign_user.txt');
 const CURATED_INPUT = path.resolve(__dirname, 'data', 'chat_curated_terms.txt');
 const CURATED_KEPT = path.resolve(__dirname, 'data', 'chat_curated_terms_kept.txt');
 
@@ -67,10 +65,10 @@ function main() {
   console.log('=== Measuring Curated Phrase: "sarap mo" ===\n');
   
   // Load datasets
-  const tagalogTrain = readCsv(path.join(DATASETS_DIR, 'Tagalog_Datasets', 'train.csv'));
-  const tagalogVal = readCsv(path.join(DATASETS_DIR, 'Tagalog_Datasets', 'val.csv'));
-  const benignMarketplace = loadBenignMessages(BENIGN_MARKETPLACE_FILE);
-  const benignUser = loadBenignMessages(BENIGN_USER_FILE);
+  const tagalogTrain = readCsv(TAGALOG_TRAIN);
+  const tagalogVal = readCsv(TAGALOG_VAL);
+  const benignMarketplace = loadBenignMessages(BENIGN_MARKETPLACE);
+  const benignUser = loadBenignMessages(BENIGN_USER);
   
   console.log(`Loaded datasets:`);
   console.log(`  Tagalog train: ${tagalogTrain.length} (toxic: ${tagalogTrain.filter(r => r.label === 1).length}, benign: ${tagalogTrain.filter(r => r.label === 0).length})`);

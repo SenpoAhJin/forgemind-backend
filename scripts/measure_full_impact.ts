@@ -15,10 +15,7 @@
 import fs from 'fs';
 import path from 'path';
 import { compileWord, containsTerm, toTarget } from '../src/moderation/normalize';
-
-const DATASETS_DIR = path.resolve(__dirname, '..', '..', 'forgemind-ai', 'marketplace_datasets');
-const BENIGN_MARKETPLACE_FILE = path.resolve(__dirname, 'data', 'benign_marketplace.txt');
-const BENIGN_USER_FILE = path.resolve(__dirname, 'data', 'benign_user.txt');
+import { TAGALOG_VAL, ENGLISH_TEST, BENIGN_MARKETPLACE, BENIGN_USER } from './lib/datasetPaths';
 
 // Base blocklist (from chatBlocklist.ts CHAT_BLOCKLIST - exact copy)
 const BASE_TERMS = [
@@ -202,11 +199,11 @@ function main() {
   
   // Load datasets
   console.log('Loading datasets...');
-  const tagalogVal = readCsv(path.join(DATASETS_DIR, 'Tagalog_Datasets', 'val.csv'));
-  const englishFile = path.join(DATASETS_DIR, 'English_Datasets', 'test.csv');
+  const tagalogVal = readCsv(TAGALOG_VAL);
+  const englishFile = ENGLISH_TEST;
   const englishHeldout = fs.existsSync(englishFile) ? readCsv(englishFile) : [];
-  const benignMarketplace = loadBenignMessages(BENIGN_MARKETPLACE_FILE);
-  const benignUser = loadBenignMessages(BENIGN_USER_FILE);
+  const benignMarketplace = loadBenignMessages(BENIGN_MARKETPLACE);
+  const benignUser = loadBenignMessages(BENIGN_USER);
   
   const tagalogValToxic = tagalogVal.filter(r => r.label === 1);
   const tagalogValBenign = tagalogVal.filter(r => r.label === 0);
@@ -218,8 +215,8 @@ function main() {
   console.log(`  Marketplace benign: ${benignMarketplace.length}`);
   console.log(`  User benign: ${benignUser.length}\n`);
   
-  // Baseline measurement (26 base terms)
-  console.log('=== BASELINE (26 base terms) ===\n');
+  // Baseline measurement (25 base terms)
+  console.log('=== BASELINE (25 base terms) ===\n');
   
   const baseTagalog = measureTerms(BASE_TERMS, tagalogValToxic, tagalogValBenign);
   console.log('Tagalog val:');
