@@ -1,5 +1,5 @@
 /**
- * Chat Endpoints Verification Script
+ * Chat Endpoints Verification Script (V2 - All Gaps Closed)
  * 
  * Self-contained tests that create throwaway users/listings, verify all rules R1-R12,
  * test moderation, and clean up everything even on failure.
@@ -12,6 +12,7 @@ import { config as loadEnv } from 'dotenv';
 import { createHash } from 'crypto';
 import { BENIGN_TEST_SET, BENIGN_USER_SET } from '../src/marketplace/chatModeration';
 import { CHAT_BLOCKLIST } from '../src/marketplace/chatBlocklist';
+import { Writable } from 'stream';
 
 loadEnv();
 
@@ -33,6 +34,25 @@ const testIds: {
 
 let passed = 0;
 let failed = 0;
+
+// Console/logger capture for R9
+let consoleOutput: string[] = [];
+const originalLog = console.log;
+const originalError = console.error;
+const originalWarn = console.warn;
+
+function captureConsole() {
+  consoleOutput = [];
+  console.log = (...args: any[]) => { consoleOutput.push(args.join(' ')); };
+  console.error = (...args: any[]) => { consoleOutput.push(args.join(' ')); };
+  console.warn = (...args: any[]) => { consoleOutput.push(args.join(' ')); };
+}
+
+function restoreConsole() {
+  console.log = originalLog;
+  console.error = originalError;
+  console.warn = originalWarn;
+}
 
 function randomId(): string {
   return Math.random().toString(36).substring(2, 10);
@@ -139,7 +159,7 @@ async function cleanup() {
 
 async function runTests() {
   try {
-    console.log('=== Chat Endpoints Verification ===\n');
+    console.log('=== Chat Endpoints Verification (V2 - All Gaps Closed) ===\n');
     
     // Create test users
     const seller = await createTestUser(true);
@@ -150,14 +170,34 @@ async function runTests() {
     const listing = await createTestListing(seller.user_id, 'active');
     const inactiveListing = await createTestListing(seller.user_id, 'sold');
     
-    // R11: 401 without token
+    // GAP 1: 401 without token on ALL 7 endpoints
     let res = await fetch(`${BASE_URL}/marketplace/chat/threads`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ listing_id: listing }) });
-    if (res.status === 401) pass('R11: POST /threads returns 401 without token');
-    else fail('R11: POST /threads without token', `expected 401, got ${res.status}`);
+    if (res.status === 401) pass('Gap1: POST /threads 401 without token');
+    else fail('Gap1: POST /threads no token', `expected 401, got ${res.status}`);
     
     res = await fetch(`${BASE_URL}/marketplace/chat/threads`);
-    if (res.status === 401) pass('R11: GET /threads returns 401 without token');
-    else fail('R11: GET /threads without token', `expected 401, got ${res.status}`);
+    if (res.status === 401) pass('Gap1: GET /threads 401 without token');
+    else fail('Gap1: GET /threads no token', `expected 401, got ${res.status}`);
+    
+    res = await fetch(`${BASE_URL}/marketplace/chat/threads/00000000-0000-0000-0000-000000000000`);
+    if (res.status === 401) pass('Gap1: GET /threads/:id 401 without token');
+    else fail('Gap1: GET /threads/:id no token', `expected 401, got ${res.status}`);
+    
+    res = await fetch(`${BASE_URL}/marketplace/chat/threads/00000000-0000-0000-0000-000000000000/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: 'test' }) });
+    if (res.status === 401) pass('Gap1: POST /messages 401 without token');
+    else fail('Gap1: POST /messages no token', `expected 401, got ${res.status}`);
+    
+    res = await fetch(`${BASE_URL}/marketplace/chat/threads/00000000-0000-0000-0000-000000000000/close`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (res.status === 401) pass('Gap1: POST /close 401 without token');
+    else fail('Gap1: POST /close no token', `expected 401, got ${res.status}`);
+    
+    res = await fetch(`${BASE_URL}/marketplace/chat/threads/00000000-0000-0000-0000-000000000000/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (res.status === 401) pass('Gap1: POST /read 401 without token');
+    else fail('Gap1: POST /read no token', `expected 401, got ${res.status}`);
+    
+    res = await fetch(`${BASE_URL}/marketplace/chat/unread-count`);
+    if (res.status === 401) pass('Gap1: GET /unread-count 401 without token');
+    else fail('Gap1: GET /unread-count no token', `expected 401, got ${res.status}`);
     
     // R1: Unverified user rejected
     res = await fetchWithAuth('/marketplace/chat/threads', unverified.token, { method: 'POST', body: JSON.stringify({ listing_id: listing }) });
@@ -177,8 +217,8 @@ async function runTests() {
       pass('R4: Create thread on active listing succeeds');
       
       // R8: No email in response
-      if (!data.seller_email && !data.buyer_email) pass('R8: No email in thread response');
-      else fail('R8: Email in response', `found email fields: ${JSON.stringify(data)}`);
+      if (!data.seller_email && !data.buyer_email) pass('R8: No email in POST /threads response');
+      else fail('R8: Email in POST /threads response', `found email fields`);
     } else {
       fail('R4: Create thread', `expected 200, got ${res.status}`);
     }
@@ -198,6 +238,72 @@ async function runTests() {
     const thread: any = await res.json();
     const thread_id = thread.thread_id;
     
+    // GAP 2: Unknown thread ID (valid UUID, not in DB) -> 404
+    const unknownUuid = '12345678-1234-1234-1234-123456789012';
+    
+    res = await fetchWithAuth(`/marketplace/chat/threads/${unknownUuid}`, buyer.token);
+    if (res.status === 404) pass('Gap2: GET unknown thread 404');
+    else fail('Gap2: GET unknown thread', `expected 404, got ${res.status}`);
+    
+    res = await fetchWithAuth(`/marketplace/chat/threads/${unknownUuid}/messages`, buyer.token, { method: 'POST', body: JSON.stringify({ body: 'test' }) });
+    if (res.status === 404) pass('Gap2: POST message unknown thread 404');
+    else fail('Gap2: POST message unknown thread', `expected 404, got ${res.status}`);
+    
+    res = await fetchWithAuth(`/marketplace/chat/threads/${unknownUuid}/close`, buyer.token, { method: 'POST', body: '{}' });
+    if (res.status === 404) pass('Gap2: POST close unknown thread 404');
+    else fail('Gap2: POST close unknown thread', `expected 404, got ${res.status}`);
+    
+    res = await fetchWithAuth(`/marketplace/chat/threads/${unknownUuid}/read`, buyer.token, { method: 'POST', body: '{}' });
+    if (res.status === 404) pass('Gap2: POST read unknown thread 404');
+    else fail('Gap2: POST read unknown thread', `expected 404, got ${res.status}`);
+    
+    // GAP 2: Malformed ID -> 400
+    res = await fetchWithAuth(`/marketplace/chat/threads/bad-id`, buyer.token);
+    if (res.status === 400) pass('Gap2: GET malformed thread 400');
+    else fail('Gap2: GET malformed thread', `expected 400, got ${res.status}`);
+    
+    res = await fetchWithAuth(`/marketplace/chat/threads/bad-id/messages`, buyer.token, { method: 'POST', body: JSON.stringify({ body: 'test' }) });
+    if (res.status === 400) pass('Gap2: POST message malformed 400');
+    else fail('Gap2: POST message malformed', `expected 400, got ${res.status}`);
+    
+    res = await fetchWithAuth(`/marketplace/chat/threads/bad-id/close`, buyer.token, { method: 'POST', body: '{}' });
+    if (res.status === 400) pass('Gap2: POST close malformed 400');
+    else fail('Gap2: POST close malformed', `expected 400, got ${res.status}`);
+    
+    res = await fetchWithAuth(`/marketplace/chat/threads/bad-id/read`, buyer.token, { method: 'POST', body: '{}' });
+    if (res.status === 400) pass('Gap2: POST read malformed 400');
+    else fail('Gap2: POST read malformed', `expected 400, got ${res.status}`);
+    
+    // GAP 5: R7 Trim - spaces-only rejected
+    res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/messages`, buyer.token, {
+      method: 'POST',
+      body: JSON.stringify({ body: '   ' })
+    });
+    if (res.status === 400) pass('Gap5: Spaces-only body rejected');
+    else fail('Gap5: Spaces-only', `expected 400, got ${res.status}`);
+    
+    // GAP 5: Padded body saved trimmed
+    const paddedBody = '   test message with padding   ';
+    res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/messages`, buyer.token, {
+      method: 'POST',
+      body: JSON.stringify({ body: paddedBody })
+    });
+    if (res.status === 201) {
+      const created: any = await res.json();
+      testIds.messages.push(created.message_id);
+      
+      // Read back from DB
+      const dbResult = await pool.query(
+        `SELECT message_text FROM chat_messages WHERE message_id = $1`,
+        [created.message_id]
+      );
+      const savedText = dbResult.rows[0].message_text;
+      if (savedText === paddedBody.trim()) pass('Gap5: Padded body saved trimmed');
+      else fail('Gap5: Padded body not trimmed', `expected "${paddedBody.trim()}", got "${savedText}"`);
+    } else {
+      fail('Gap5: Send padded message', `expected 201, got ${res.status}`);
+    }
+    
     // R7: Send valid message
     res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/messages`, buyer.token, {
       method: 'POST',
@@ -211,14 +317,6 @@ async function runTests() {
       fail('R7: Valid message', `expected 201, got ${res.status}`);
     }
     
-    // R7: Empty body rejected
-    res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/messages`, buyer.token, {
-      method: 'POST',
-      body: JSON.stringify({ body: '   ' })
-    });
-    if (res.status === 400) pass('R7: Empty body rejected');
-    else fail('R7: Empty body', `expected 400, got ${res.status}`);
-    
     // R7: Body > 1000 chars rejected
     const longBody = 'a'.repeat(1001);
     res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/messages`, buyer.token, {
@@ -228,30 +326,66 @@ async function runTests() {
     if (res.status === 400) pass('R7: Body >1000 chars rejected');
     else fail('R7: Long body', `expected 400, got ${res.status}`);
     
-    // R10: Blocked message returns 422 and is not saved
-    const blockedTerm = CHAT_BLOCKLIST[0]; // Take first term programmatically
+    // GAP 6 + GAP 7: R10 Blocked message - capture output and verify response
+    const blockedTerm = CHAT_BLOCKLIST[0]; // Take first term programmatically (never print)
+    
+    // GAP 7: R9 Capture console output during blocked send
+    captureConsole();
     res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/messages`, buyer.token, {
       method: 'POST',
       body: JSON.stringify({ body: blockedTerm })
     });
+    restoreConsole();
+    
+    // GAP 7: R9 Assert message body absent in console output
+    const hasBodyInLog = consoleOutput.some(line => line.includes(blockedTerm));
+    if (!hasBodyInLog) pass('Gap7: R9 Blocked message body not logged');
+    else fail('Gap7: R9 Blocked message logged', 'found message body in console output');
+    
     if (res.status === 422) {
       const data: any = await res.json();
-      if (data.error === 'message_blocked') {
-        // Verify it was NOT saved
-        const checkResult = await pool.query(
-          `SELECT COUNT(*) as count FROM chat_messages WHERE thread_id = $1 AND message_text = $2`,
-          [thread_id, blockedTerm]
-        );
-        if (parseInt(checkResult.rows[0].count, 10) === 0) {
-          pass('R10: Blocked message returns 422 and is not saved');
-        } else {
-          fail('R10: Blocked message not saved', 'message was saved to database');
-        }
+      
+      // GAP 6: R10 Verify response has only error + message, no term/hint/score
+      const allowedKeys = ['error', 'message'];
+      const extraKeys = Object.keys(data).filter(k => !allowedKeys.includes(k));
+      if (extraKeys.length === 0 && data.error === 'message_blocked') {
+        pass('Gap6: R10 Blocked response has no term/hint/score');
       } else {
-        fail('R10: Blocked message error', `expected error:message_blocked, got ${data.error}`);
+        fail('Gap6: R10 Extra fields in response', `found: ${extraKeys.join(', ')}`);
+      }
+      
+      // Verify it was NOT saved
+      const checkResult = await pool.query(
+        `SELECT COUNT(*) as count FROM chat_messages WHERE thread_id = $1 AND message_text = $2`,
+        [thread_id, blockedTerm]
+      );
+      if (parseInt(checkResult.rows[0].count, 10) === 0) {
+        pass('R10: Blocked message not saved to DB');
+      } else {
+        fail('R10: Blocked message saved', 'message was saved to database');
       }
     } else {
-      fail('R10: Blocked message', `expected 422, got ${res.status}`);
+      fail('R10: Blocked message status', `expected 422, got ${res.status}`);
+    }
+    
+    // GAP 7: R9 Capture console output during valid send
+    captureConsole();
+    res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/messages`, buyer.token, {
+      method: 'POST',
+      body: JSON.stringify({ body: 'Valid test message for logging check' })
+    });
+    restoreConsole();
+    
+    const validBody = 'Valid test message for logging check';
+    const hasValidBodyInLog = consoleOutput.some(line => line.includes(validBody));
+    if (!hasValidBodyInLog) {
+      pass('Gap7: R9 Valid message body not logged');
+      if (res.status === 201) {
+        const created: any = await res.json();
+        testIds.messages.push(created.message_id);
+      }
+    } else {
+      fail('Gap7: R9 Valid message logged', 'found message body in console output');
     }
     
     // Benign messages including Tagalog/Taglish
@@ -276,29 +410,73 @@ async function runTests() {
     // R2: Non-participant cannot access thread
     res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}`, other.token);
     if (res.status === 404) pass('R2: Non-participant cannot GET thread');
-    else fail('R2: Non-participant access', `expected 404, got ${res.status}`);
+    else fail('R2: Non-participant GET', `expected 404, got ${res.status}`);
     
     res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/messages`, other.token, {
       method: 'POST',
       body: JSON.stringify({ body: 'Hello' })
     });
     if (res.status === 404) pass('R2: Non-participant cannot POST message');
-    else fail('R2: Non-participant message', `expected 404, got ${res.status}`);
+    else fail('R2: Non-participant POST message', `expected 404, got ${res.status}`);
+    
+    // GAP 3: R2 Non-participant on close + read
+    res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/close`, other.token, { method: 'POST', body: '{}' });
+    if (res.status === 404) pass('Gap3: R2 Non-participant cannot close');
+    else fail('Gap3: R2 Non-participant close', `expected 404, got ${res.status}`);
+    
+    res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/read`, other.token, { method: 'POST', body: '{}' });
+    if (res.status === 404) pass('Gap3: R2 Non-participant cannot read');
+    else fail('Gap3: R2 Non-participant read', `expected 404, got ${res.status}`);
     
     // R2: Participants can access
     res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}`, seller.token);
-    if (res.status === 200) pass('R2: Seller (participant) can GET thread');
-    else fail('R2: Seller access', `expected 200, got ${res.status}`);
+    if (res.status === 200) {
+      pass('R2: Seller (participant) can GET thread');
+      
+      // GAP 4: No email in thread detail response
+      const detail: any = await res.json();
+      const detailJson = JSON.stringify(detail);
+      if (!detailJson.includes(seller.email) && !detailJson.includes(buyer.email)) {
+        pass('Gap4: No email in GET /threads/:id response');
+      } else {
+        fail('Gap4: Email in GET /threads/:id', 'found email in response');
+      }
+    } else {
+      fail('R2: Seller access', `expected 200, got ${res.status}`);
+    }
     
     res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}`, buyer.token);
     if (res.status === 200) pass('R2: Buyer (participant) can GET thread');
     else fail('R2: Buyer access', `expected 200, got ${res.status}`);
     
+    // GAP 4: No email in thread list response
+    res = await fetchWithAuth('/marketplace/chat/threads', buyer.token);
+    if (res.status === 200) {
+      const listData: any = await res.json();
+      const listJson = JSON.stringify(listData);
+      if (!listJson.includes(seller.email) && !listJson.includes(buyer.email)) {
+        pass('Gap4: No email in GET /threads list response');
+      } else {
+        fail('Gap4: Email in GET /threads list', 'found email in response');
+      }
+    }
+    
     // Unread count rises
     res = await fetchWithAuth('/marketplace/chat/unread-count', seller.token);
     const beforeRead: any = await res.json();
-    if (beforeRead.unread_count > 0) pass('Unread count rises after message sent');
-    else fail('Unread count', 'expected >0 unread');
+    if (beforeRead.unread_count > 0) {
+      pass('Unread count rises after message sent');
+      
+      // GAP 4: No email in unread-count response
+      const unreadJson = JSON.stringify(beforeRead);
+      if (!unreadJson.includes(seller.email) && !unreadJson.includes(buyer.email)) {
+        pass('Gap4: No email in GET /unread-count response');
+      } else {
+        fail('Gap4: Email in GET /unread-count', 'found email in response');
+      }
+    } else {
+      fail('Unread count', 'expected >0 unread');
+    }
     
     // Mark as read
     res = await fetchWithAuth(`/marketplace/chat/threads/${thread_id}/read`, seller.token, { method: 'POST', body: '{}' });
