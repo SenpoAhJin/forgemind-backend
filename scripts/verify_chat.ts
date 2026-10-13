@@ -556,6 +556,104 @@ async function runTests() {
       fail('GET /threads', `expected 200, got ${res.status}`);
     }
     
+    // === CURATED TERMS TESTS ===
+    // Load curated terms programmatically (never print them)
+    const { CURATED_TERMS } = await import('../src/marketplace/chatBlocklist');
+    
+    // Test 1: Each curated phrase blocks with 422
+    for (let i = 0; i < CURATED_TERMS.length; i++) {
+      const phrase = CURATED_TERMS[i];
+      const testMsg = `Test: ${phrase}`;
+      
+      // Create fresh thread for this test
+      res = await fetchWithAuth('/marketplace/chat/threads', buyer.token, { 
+        method: 'POST', 
+        body: JSON.stringify({ listing_id: listing }) 
+      });
+      const testThread: any = await res.json();
+      testIds.threads.push(testThread.thread_id);
+      
+      // Try to send curated phrase
+      res = await fetchWithAuth(`/marketplace/chat/threads/${testThread.thread_id}/messages`, buyer.token, {
+        method: 'POST',
+        body: JSON.stringify({ body: phrase })
+      });
+      
+      if (res.status === 422) {
+        const errData: any = await res.json();
+        if (errData.error === 'message_blocked') {
+          pass(`Curated phrase ${i+1} blocked with 422`);
+          
+          // Verify NOT saved to DB
+          const check = await pool.query(
+            'SELECT COUNT(*) FROM chat_messages WHERE thread_id = $1',
+            [testThread.thread_id]
+          );
+          if (parseInt(check.rows[0].count) === 0) {
+            pass(`Curated phrase ${i+1} not saved to DB`);
+          } else {
+            fail(`Curated phrase ${i+1} DB check`, 'message found in DB');
+          }
+        } else {
+          fail(`Curated phrase ${i+1} error type`, `expected message_blocked, got ${errData.error}`);
+        }
+      } else {
+        fail(`Curated phrase ${i+1} blocking`, `expected 422, got ${res.status}`);
+      }
+    }
+    
+    // Test 2: Benign messages with single words from curated phrases pass
+    const benignWithSharedWords = [
+      "Sarap ng pagkain dito!",  // "sarap" in normal context
+      "Ang sarap ng cake",
+      "Sarap talaga ng tulog",
+      "May sarap pa ba?",
+      "Mo ba yan?",  // "mo" alone
+      "Salamat mo"
+    ];
+    
+    for (const msg of benignWithSharedWords) {
+      res = await fetchWithAuth(`/marketplace/chat/threads/${threadIds[0]}/messages`, buyer.token, {
+        method: 'POST',
+        body: JSON.stringify({ body: msg })
+      });
+      
+      if (res.status === 200) {
+        pass(`Benign "${msg.substring(0, 20)}..." passes`);
+        const msgData: any = await res.json();
+        testIds.messages.push(msgData.message_id);
+      } else {
+        fail(`Benign message blocked`, `"${msg}" got ${res.status}`);
+      }
+    }
+    
+    // Test 3: Startup with missing curated file (rename temporarily)
+    const fs = await import('fs');
+    const path = await import('path');
+    const curatedPath = path.join(__dirname, 'data', 'chat_curated_terms_kept.txt');
+    const backupPath = curatedPath + '.test-backup';
+    
+    let fileExisted = false;
+    if (fs.existsSync(curatedPath)) {
+      fs.renameSync(curatedPath, backupPath);
+      fileExisted = true;
+    }
+    
+    // Reimport to test file-missing case
+    delete require.cache[require.resolve('../src/marketplace/chatBlocklist')];
+    const { CURATED_TERMS: emptyTerms } = await import('../src/marketplace/chatBlocklist');
+    
+    if (emptyTerms.length === 0) {
+      pass('Missing curated file: server loads with 0 curated terms');
+    } else {
+      fail('Missing file handling', `expected 0 terms, got ${emptyTerms.length}`);
+    }
+    
+    // Restore file
+    if (fileExisted) {
+      fs.renameSync(backupPath, curatedPath);
+    }
+    
     console.log(`\n=== Results ===`);
     console.log(`Passed: ${passed}`);
     console.log(`Failed: ${failed}`);
