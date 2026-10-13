@@ -1,12 +1,16 @@
 /**
- * Mine Chat Candidate Phrases
+ * Mine Chat Candidate Phrases - Non-Circular Version
  * 
- * STEP 1: Extract candidates from Block_Words and toxic datasets
- * STEP 2: Gate against benign sets (0 hits required)
- * STEP 3: Measure on validation splits
+ * STRICT SPLITS:
+ * - GATE sets (used to reject candidates): Tagalog TRAIN benign, English TRAIN benign, marketplace benign, user benign, negative rows
+ * - HELD-OUT sets (NEVER used for gating, only for measuring): Tagalog VAL benign/toxic, English TEST benign/toxic
+ * 
+ * STEP 1: Extract candidates from Block_Words (Part1 only, dup is identical) and Tagalog toxic
+ * STEP 2: Gate against TRAIN benign sets ONLY (0 hits required)
+ * STEP 3: Measure on HELD-OUT validation splits (never seen during gating)
  * STEP 4: Output ranked candidates for user review
  * 
- * NO TEXT PRINTED (counts only).
+ * NO TEXT PRINTED (counts/ids only).
  */
 
 import * as fs from 'fs';
@@ -15,15 +19,29 @@ import { compileWord, containsTerm, toTarget } from '../src/moderation/normalize
 import { 
   TAGALOG_TRAIN, 
   TAGALOG_VAL, 
+  ENGLISH_TRAIN,
+  ENGLISH_TEST,
   BENIGN_MARKETPLACE, 
   BENIGN_USER,
-  BLOCK_WORDS_PART1,
-  BLOCK_WORDS_PART1_DUP
+  BLOCK_WORDS_PART1
 } from './lib/datasetPaths';
 
 interface Row {
   text: string;
   label: number;
+}
+
+interface EnglishRow {
+  id: string;
+  text: string;
+  field: string;
+  source: string;
+  clean: number;
+  vulgar: number;
+  hate: number;
+  adult: number;
+  prohibited: number;
+  unrelated: number;
 }
 
 interface Candidate {
@@ -52,6 +70,35 @@ function readCsv(file: string): Row[] {
     const match = /^(.+),(\d+)$/.exec(lines[i]);
     if (match) {
       rows.push({ text: match[1].trim(), label: parseInt(match[2], 10) });
+    }
+  }
+  
+  return rows;
+}
+
+function readEnglishCsv(file: string): EnglishRow[] {
+  if (!fs.existsSync(file)) return [];
+  
+  const content = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+  const lines = content.split('\n').filter(l => l.trim());
+  const rows: EnglishRow[] = [];
+  
+  // Skip header
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(',');
+    if (parts.length >= 10) {
+      rows.push({
+        id: parts[0],
+        text: parts[1],
+        field: parts[2],
+        source: parts[3],
+        clean: parseInt(parts[4], 10),
+        vulgar: parseInt(parts[5], 10),
+        hate: parseInt(parts[6], 10),
+        adult: parseInt(parts[7], 10),
+        prohibited: parseInt(parts[8], 10),
+        unrelated: parseInt(parts[9], 10)
+      });
     }
   }
   
@@ -108,10 +155,10 @@ function extractNgrams(text: string, minWords: number, maxWords: number): string
   return ngrams;
 }
 
-function mineCandidatesFromBlockWords(file: string): Candidate[] {
-  console.log(`\nMining from Block_Words: ${path.basename(file)}`);
+function mineCandidatesFromBlockWords(): Candidate[] {
+  console.log(`\nMining from Block_Words Part1 (dup is identical, using Part1 only)`);
   
-  const rows = readBlockWords(file);
+  const rows = readBlockWords(BLOCK_WORDS_PART1);
   const offensive = rows.filter(r => r.isOffensive);
   const nonOffensive = rows.filter(r => !r.isOffensive);
   
@@ -140,7 +187,7 @@ function mineCandidatesFromBlockWords(file: string): Candidate[] {
   const candidates: Candidate[] = [];
   for (const [phrase, count] of phraseCounts.entries()) {
     if (count >= 5 && !phraseInNegative.has(phrase)) {
-      candidates.push({ phrase, source: `BlockWords_${path.basename(file)}`, support: count });
+      candidates.push({ phrase, source: 'BlockWords_Part1', support: count });
     }
   }
   
@@ -197,20 +244,23 @@ function mineCandidatesFromTagalog(): Candidate[] {
 }
 
 function gateAgainstBenign(candidates: Candidate[]): Candidate[] {
-  console.log(`\n=== STEP 2: Gate Against Benign Sets ===`);
+  console.log(`\n=== STEP 2: Gate Against TRAIN Benign Sets (Non-Circular) ===`);
   console.log(`Input candidates: ${candidates.length}`);
   
-  // Load all benign sets
-  const tagalogTrain = readCsv(TAGALOG_TRAIN).filter(r => r.label === 0);
-  const tagalogVal = readCsv(TAGALOG_VAL).filter(r => r.label === 0);
+  // Load GATE sets (Tagalog TRAIN benign, English TRAIN benign, marketplace, user)
+  // NEVER load VAL or TEST - those are HELD-OUT for measurement
+  const tagalogTrainBenign = readCsv(TAGALOG_TRAIN).filter(r => r.label === 0);
+  const englishTrainRows = readEnglishCsv(ENGLISH_TRAIN);
+  const englishTrainBenign = englishTrainRows.filter(r => r.clean === 1);
   const marketplace = loadBenignMessages(BENIGN_MARKETPLACE);
   const user = loadBenignMessages(BENIGN_USER);
   
-  console.log(`\nBenign sets:`);
-  console.log(`  Tagalog train benign: ${tagalogTrain.length}`);
-  console.log(`  Tagalog val benign: ${tagalogVal.length}`);
-  console.log(`  Marketplace: ${marketplace.length}`);
-  console.log(`  User: ${user.length}`);
+  console.log(`\nGate sets (used to reject candidates):`);
+  console.log(`  Tagalog TRAIN benign: ${tagalogTrainBenign.length}`);
+  console.log(`  English TRAIN benign: ${englishTrainBenign.length}`);
+  console.log(`  Marketplace benign: ${marketplace.length}`);
+  console.log(`  User benign: ${user.length}`);
+  console.log(`  (VAL and TEST splits are HELD-OUT, never used for gating)`);
   
   const passed: Candidate[] = [];
   const rejected = new Map<string, number>(); // reason -> count
@@ -220,21 +270,21 @@ function gateAgainstBenign(candidates: Candidate[]): Candidate[] {
     let blocked = false;
     let blockReason = '';
     
-    // Check Tagalog train benign
-    for (const row of tagalogTrain) {
+    // Check Tagalog TRAIN benign
+    for (const row of tagalogTrainBenign) {
       if (containsTerm(toTarget(row.text), compiled)) {
         blocked = true;
-        blockReason = 'Tagalog_train_benign';
+        blockReason = 'Tagalog_TRAIN_benign';
         break;
       }
     }
     
     if (!blocked) {
-      // Check Tagalog val benign
-      for (const row of tagalogVal) {
+      // Check English TRAIN benign
+      for (const row of englishTrainBenign) {
         if (containsTerm(toTarget(row.text), compiled)) {
           blocked = true;
-          blockReason = 'Tagalog_val_benign';
+          blockReason = 'English_TRAIN_benign';
           break;
         }
       }
@@ -281,27 +331,34 @@ function gateAgainstBenign(candidates: Candidate[]): Candidate[] {
 }
 
 function measureOnValidation(candidates: Candidate[]) {
-  console.log(`\n=== STEP 3: Honest Measure on Validation Split ===`);
+  console.log(`\n=== STEP 3: Honest Measure on HELD-OUT Validation Splits ===`);
+  console.log(`(These splits were NEVER used for gating)`);
   
-  // Load validation data
+  // Load HELD-OUT data (VAL and TEST)
   const tagalogVal = readCsv(TAGALOG_VAL);
   const tagalogValToxic = tagalogVal.filter(r => r.label === 1);
   const tagalogValBenign = tagalogVal.filter(r => r.label === 0);
   
+  const englishTestRows = readEnglishCsv(ENGLISH_TEST);
+  const englishTestToxic = englishTestRows.filter(r => r.vulgar === 1 || r.hate === 1 || r.adult === 1 || r.prohibited === 1);
+  const englishTestBenign = englishTestRows.filter(r => r.clean === 1);
+  
   const marketplace = loadBenignMessages(BENIGN_MARKETPLACE);
   const user = loadBenignMessages(BENIGN_USER);
   
-  console.log(`\nValidation sets:`);
-  console.log(`  Tagalog val toxic: ${tagalogValToxic.length}`);
-  console.log(`  Tagalog val benign: ${tagalogValBenign.length}`);
-  console.log(`  Marketplace benign: ${marketplace.length}`);
-  console.log(`  User benign: ${user.length}`);
+  console.log(`\nHeld-out validation sets:`);
+  console.log(`  Tagalog VAL toxic: ${tagalogValToxic.length}`);
+  console.log(`  Tagalog VAL benign: ${tagalogValBenign.length}`);
+  console.log(`  English TEST toxic: ${englishTestToxic.length}`);
+  console.log(`  English TEST benign: ${englishTestBenign.length}`);
+  console.log(`  Marketplace benign: ${marketplace.length} (not split, used in gating)`);
+  console.log(`  User benign: ${user.length} (empty, used in gating)`);
   
   // Compile candidates
   const compiled = candidates.map(c => ({ ...c, compiled: compileWord(c.phrase) }));
   
-  // Measure toxic catch
-  let toxicCaught = 0;
+  // Measure Tagalog toxic catch
+  let tlToxicCaught = 0;
   for (const row of tagalogValToxic) {
     const target = toTarget(row.text);
     let caught = false;
@@ -311,18 +368,53 @@ function measureOnValidation(candidates: Candidate[]) {
         break;
       }
     }
-    if (caught) toxicCaught++;
+    if (caught) tlToxicCaught++;
+  }
+  
+  // Measure English toxic catch
+  let enToxicCaught = 0;
+  for (const row of englishTestToxic) {
+    const target = toTarget(row.text);
+    let caught = false;
+    for (const c of compiled) {
+      if (containsTerm(target, c.compiled)) {
+        caught = true;
+        break;
+      }
+    }
+    if (caught) enToxicCaught++;
   }
   
   // Measure benign blocks
-  let benignBlocked = 0;
-  const allBenign = [
-    ...tagalogValBenign.map(r => r.text),
-    ...marketplace,
-    ...user
-  ];
+  let tlBenignBlocked = 0;
+  for (const row of tagalogValBenign) {
+    const target = toTarget(row.text);
+    let blocked = false;
+    for (const c of compiled) {
+      if (containsTerm(target, c.compiled)) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) tlBenignBlocked++;
+  }
   
-  for (const msg of allBenign) {
+  let enBenignBlocked = 0;
+  for (const row of englishTestBenign) {
+    const target = toTarget(row.text);
+    let blocked = false;
+    for (const c of compiled) {
+      if (containsTerm(target, c.compiled)) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) enBenignBlocked++;
+  }
+  
+  // Marketplace/user were already used in gating, so 0 expected
+  let marketplaceBlocked = 0;
+  for (const msg of marketplace) {
     const target = toTarget(msg);
     let blocked = false;
     for (const c of compiled) {
@@ -331,45 +423,51 @@ function measureOnValidation(candidates: Candidate[]) {
         break;
       }
     }
-    if (blocked) benignBlocked++;
+    if (blocked) marketplaceBlocked++;
   }
   
-  const toxicRate = (toxicCaught / tagalogValToxic.length) * 100;
-  const benignRate = (benignBlocked / allBenign.length) * 100;
+  const tlToxicRate = (tlToxicCaught / tagalogValToxic.length) * 100;
+  const enToxicRate = (enToxicCaught / englishTestToxic.length) * 100;
+  const tlBenignRate = (tlBenignBlocked / tagalogValBenign.length) * 100;
+  const enBenignRate = (enBenignBlocked / englishTestBenign.length) * 100;
   
-  console.log(`\nMined candidates alone:`);
-  console.log(`  Toxic caught: ${toxicCaught}/${tagalogValToxic.length} (${toxicRate.toFixed(2)}%)`);
-  console.log(`  Benign blocked: ${benignBlocked}/${allBenign.length} (${benignRate.toFixed(4)}%)`);
+  console.log(`\nMined candidates alone (curated phrases ONLY, no base terms):`);
+  console.log(`  Tagalog VAL toxic caught: ${tlToxicCaught}/${tagalogValToxic.length} (${tlToxicRate.toFixed(2)}%)`);
+  console.log(`  English TEST toxic caught: ${enToxicCaught}/${englishTestToxic.length} (${enToxicRate.toFixed(2)}%)`);
+  console.log(`  Tagalog VAL benign blocked: ${tlBenignBlocked}/${tagalogValBenign.length} (${tlBenignRate.toFixed(4)}%)`);
+  console.log(`  English TEST benign blocked: ${enBenignBlocked}/${englishTestBenign.length} (${enBenignRate.toFixed(4)}%)`);
+  console.log(`  Marketplace benign blocked: ${marketplaceBlocked}/${marketplace.length} (should be 0)`);
   
-  // MUST be 0 benign blocks
-  if (benignBlocked > 0) {
-    console.log(`\n⚠️  WARNING: ${benignBlocked} benign false positives detected!`);
+  // Gate validation
+  const totalBenignBlocked = tlBenignBlocked + enBenignBlocked + marketplaceBlocked;
+  if (totalBenignBlocked > 0) {
+    console.log(`\n⚠️  WARNING: ${totalBenignBlocked} benign false positives detected!`);
     console.log(`  These candidates should NOT have passed the gate.`);
   } else {
-    console.log(`\n✅ PASS: 0 benign false positives (gate worked correctly)`);
+    console.log(`\n✅ PASS: 0 benign false positives on HELD-OUT sets (gate worked correctly)`);
   }
 }
 
 function main() {
-  console.log('=== Mine Chat Candidate Phrases ===');
-  console.log('STEP 0: Dataset check complete (see dataset-inventory.md)');
+  console.log('=== Mine Chat Candidate Phrases - Non-Circular ===');
+  console.log('Dataset inventory complete (see dataset-inventory.md)');
   console.log('  - Explicit_Datasets: IMAGES (JPG) - SKIPPED');
-  console.log('  - Block_Words: TEXT (offensive/hate speech tweets)');
+  console.log('  - Block_Words Part1: TEXT (offensive tweets) - Part1 only, dup is identical');
   console.log('  - Tagalog toxic: TEXT (chat harassment)');
-  console.log('  - English: NOT PRESENT');
+  console.log('  - English: processed/ folder with train/test/val splits');
+  console.log('');
+  console.log('STRICT SPLITS:');
+  console.log('  GATE sets: Tagalog TRAIN benign, English TRAIN benign, marketplace, user, negative rows');
+  console.log('  HELD-OUT sets: Tagalog VAL benign/toxic, English TEST benign/toxic (NEVER used for gating)');
   
   // STEP 1: Mine candidates
   console.log('\n=== STEP 1: Mine Candidates ===');
   
   const allCandidates: Candidate[] = [];
   
-  // From Block_Words
+  // From Block_Words (Part1 only, dup is identical)
   if (fs.existsSync(BLOCK_WORDS_PART1)) {
-    allCandidates.push(...mineCandidatesFromBlockWords(BLOCK_WORDS_PART1));
-  }
-  
-  if (fs.existsSync(BLOCK_WORDS_PART1_DUP)) {
-    allCandidates.push(...mineCandidatesFromBlockWords(BLOCK_WORDS_PART1_DUP));
+    allCandidates.push(...mineCandidatesFromBlockWords());
   }
   
   // From Tagalog toxic
@@ -407,7 +505,7 @@ function main() {
   const outputPath = path.resolve(__dirname, 'data', 'chat_curated_candidates.txt');
   const lines = [
     '# Mined Chat Candidate Phrases',
-    '# Generated by scripts/mine_chat_candidates.ts',
+    '# Generated by scripts/mine_chat_candidates.ts (non-circular version)',
     '# DO NOT commit this file (contains phrase text)',
     '#',
     '# To approve phrases:',
