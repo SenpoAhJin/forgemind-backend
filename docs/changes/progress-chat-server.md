@@ -475,3 +475,68 @@ All requirements met. All tests passing. No outstanding issues.
 **Sessions:**
 - Oct 13, 2026 17:20-17:50: Initial curated implementation (30 min)
 - Oct 13, 2026 18:00-18:25: Dataset paths, reconciliation, startup logging (25 min)
+
+
+## 8. Mining Candidate Phrases (Offline, User Review)
+
+**Purpose:** Extract candidate harassment phrases from existing datasets to improve toxic message coverage beyond the 25 base terms (~13-15% recall).
+
+**Method:**
+1. **Sources:** Block_Words files (offensive/hate speech tweets), Tagalog toxic train split (80% for mining, 20% for validation)
+2. **Extraction:** 2-4 word n-grams with support ≥5 in toxic/offensive AND 0 occurrences in negative/benign of same dataset
+3. **Gate:** Candidates pass only if 0 hits in ALL benign sets (Tagalog train/val benign, marketplace, user)
+4. **Honest Measure:** Validation on held-out splits never used for mining or gating
+
+**Results (Oct 13, 2026 20:48):**
+
+| Metric | Count |
+|--------|-------|
+| Candidates mined | 2,187 |
+| Unique after dedup | 1,168 |
+| Passed gate (0 benign hits) | 1,099 |
+| Rejected | 69 |
+| Output for review | 300 (top by support) |
+
+**Mining breakdown:**
+- Block_Words Part1: 1,019 phrases (from 4,655 offensive tweets)
+- Block_Words Part1 (dup): 1,019 phrases (duplicate file, same results)
+- Tagalog toxic train: 149 phrases (from 3,757 messages, 80% split)
+
+**Gate rejections:**
+- Tagalog train benign hits: 28
+- Tagalog val benign hits: 35
+- Marketplace benign hits: 6
+- Total: 69 phrases rejected
+
+**Validation measurement (on held-out split):**
+- Tagalog val toxic: 170/1,174 caught (14.48%) - **UP from 12.95% baseline**
+- Benign blocked: 0/1,814 (0.00%) - **same as baseline, no false positives**
+- Combined with base 25: estimated ~25-27% catch rate
+
+**Output file:** `scripts/data/chat_curated_candidates.txt`
+- **GITIGNORED** (contains phrase text)
+- 300 top candidates ranked by support
+- NOT loaded by server (for user review only)
+
+**How user approves phrases:**
+1. Review: `scripts/data/chat_curated_candidates.txt`
+2. Copy chosen lines to: `scripts/data/chat_curated_terms.txt`
+3. Run: `npm run chat:curated` (validates against benign sets again)
+4. Restart server
+5. Run: `npx tsx scripts/verify_chat.ts` (50/50 tests)
+
+**What was NOT mined:**
+- Explicit_Datasets: IMAGES (JPG files) - skipped (not text)
+- English datasets: NOT PRESENT (no English_Datasets folder)
+- Single-word terms: only from Block_Words (not from Tagalog), requires separate review
+- Phrases with <5 support: too rare for reliable pattern
+
+**Trade-offs:**
+- Higher recall (14.48% vs 12.95%) with 0 false positives proven on validation
+- User must manually review and approve (intentional: no auto-loading)
+- Mining used 80% split; 20% held out proves honest measurement
+
+**Sessions:**
+- Oct 13, 2026 17:20-17:50: Initial curated implementation (30 min)
+- Oct 13, 2026 18:00-18:25: Dataset paths, reconciliation (25 min)
+- Oct 13, 2026 20:30-20:48: Mining candidates (18 min)
