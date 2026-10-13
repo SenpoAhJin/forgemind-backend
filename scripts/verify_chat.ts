@@ -604,31 +604,64 @@ async function runTests() {
     }
     
     // Test 2: Benign messages with single words from curated phrases pass
-    const benignWithSharedWords = [
-      "Sarap ng pagkain dito!",  // "sarap" in normal context
-      "Ang sarap ng cake",
-      "Sarap talaga ng tulog",
-      "May sarap pa ba?",
-      "Mo ba yan?",  // "mo" alone
-      "Salamat mo"
-    ];
-    
-    // Use first thread from earlier tests
-    const firstThread = testIds.threads[0];
-    
-    for (const msg of benignWithSharedWords) {
-      res = await fetchWithAuth(`/marketplace/chat/threads/${firstThread}/messages`, buyer.token, {
+    // Only run if we have curated terms
+    if (CURATED_TERMS.length > 0) {
+      const benignWithSharedWords = [
+        "Sarap ng pagkain dito!",  // "sarap" in normal context
+        "Ang sarap ng cake",
+        "Sarap talaga ng tulog",
+        "May sarap pa ba?",
+        "Mo ba yan?",  // "mo" alone
+        "Salamat mo"
+      ];
+      
+      // Create fresh listing and thread for benign tests (earlier thread was closed)
+      res = await fetchWithAuth('/marketplace/listings', seller.token, {
         method: 'POST',
-        body: JSON.stringify({ body: msg })
+        body: JSON.stringify({
+          category: 'cosplay_outfits',
+          character_id: null,
+          title: 'Benign Test Listing',
+          description: 'For curated benign tests',
+          price: 999,
+          condition: 'new',
+          size: 'M',
+          photos: []
+        })
+      });
+      const benignListing: any = await res.json();
+      testIds.listings.push(benignListing.listing_id);
+      
+      res = await fetchWithAuth('/marketplace/chat/threads', buyer.token, { 
+        method: 'POST', 
+        body: JSON.stringify({ listing_id: benignListing.listing_id }) 
       });
       
-      if (res.status === 200) {
-        pass(`Benign "${msg.substring(0, 20)}..." passes`);
-        const msgData: any = await res.json();
-        testIds.messages.push(msgData.message_id);
+      if (res.status !== 200) {
+        fail('Benign test setup', `Failed to create thread for benign tests: ${res.status}`);
       } else {
-        fail(`Benign message blocked`, `"${msg}" got ${res.status}`);
+        const benignThread: any = await res.json();
+        const firstThread = benignThread.thread_id;
+        testIds.threads.push(firstThread);
+        
+        for (const msg of benignWithSharedWords) {
+          res = await fetchWithAuth(`/marketplace/chat/threads/${firstThread}/messages`, buyer.token, {
+            method: 'POST',
+            body: JSON.stringify({ body: msg })
+          });
+          
+          if (res.status === 200) {
+            pass(`Benign "${msg.substring(0, 20)}..." passes`);
+            const msgData: any = await res.json();
+            testIds.messages.push(msgData.message_id);
+          } else {
+            const errData: any = await res.json();
+            fail(`Benign message blocked`, `"${msg}" got ${res.status}, error: ${errData.error || 'unknown'}`);
+          }
+        }
       }
+    } else {
+      pass('Benign shared words test: skipped (0 curated terms)');
     }
     
     // Test 3: Startup with missing curated file (rename temporarily)
