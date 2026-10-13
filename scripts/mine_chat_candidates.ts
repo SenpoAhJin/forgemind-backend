@@ -1,21 +1,21 @@
 /**
- * Mine Chat Candidate Phrases - Non-Circular Version
+ * Mine Chat Candidate Phrases - Optimized Non-Circular Version
  * 
- * STRICT SPLITS:
- * - GATE sets (used to reject candidates): Tagalog TRAIN benign, English TRAIN benign, marketplace benign, user benign, negative rows
- * - HELD-OUT sets (NEVER used for gating, only for measuring): Tagalog VAL benign/toxic, English TEST benign/toxic
+ * SPEED OPTIMIZATIONS:
+ * 1. Precompute toTarget() once per benign row
+ * 2. Build inverted index: word -> row IDs containing it
+ * 3. For each candidate, look up rows by rarest word, then confirm with containsTerm
  * 
- * STEP 1: Extract candidates from Block_Words (Part1 only, dup is identical) and Tagalog toxic
- * STEP 2: Gate against TRAIN benign sets ONLY (0 hits required)
- * STEP 3: Measure on HELD-OUT validation splits (never seen during gating)
- * STEP 4: Output ranked candidates for user review
+ * STRICT SPLITS (unchanged):
+ * - GATE sets: Tagalog TRAIN benign, English TRAIN benign (all labeled), marketplace, user, negatives
+ * - HELD-OUT: Tagalog VAL benign/toxic, English TEST benign/toxic (NEVER used for gating)
  * 
- * NO TEXT PRINTED (counts/ids only).
+ * NO PHRASE TEXT (counts/ids only).
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { compileWord, containsTerm, toTarget } from '../src/moderation/normalize';
+import { compileWord, containsTerm, toTarget, MatchTarget } from '../src/moderation/normalize';
 import { 
   TAGALOG_TRAIN, 
   TAGALOG_VAL, 
@@ -34,20 +34,22 @@ interface Row {
 interface EnglishRow {
   id: string;
   text: string;
-  field: string;
-  source: string;
-  clean: number;
-  vulgar: number;
-  hate: number;
-  adult: number;
-  prohibited: number;
-  unrelated: number;
+  clean: number | null;
+  vulgar: number | null;
+  hate: number | null;
+  adult: number | null;
+  prohibited: number | null;
 }
 
 interface Candidate {
   phrase: string;
   source: string;
   support: number;
+}
+
+interface PreprocessedRow {
+  id: number;
+  target: MatchTarget;
 }
 
 // Fixed seed for reproducible splits
@@ -87,18 +89,24 @@ function readEnglishCsv(file: string): EnglishRow[] {
   for (let i = 1; i < lines.length; i++) {
     const parts = lines[i].split(',');
     if (parts.length >= 10) {
-      rows.push({
-        id: parts[0],
-        text: parts[1],
-        field: parts[2],
-        source: parts[3],
-        clean: parseInt(parts[4], 10),
-        vulgar: parseInt(parts[5], 10),
-        hate: parseInt(parts[6], 10),
-        adult: parseInt(parts[7], 10),
-        prohibited: parseInt(parts[8], 10),
-        unrelated: parseInt(parts[9], 10)
-      });
+      const clean = parts[4] === '1' ? 1 : (parts[4] === '0' ? 0 : null);
+      const vulgar = parts[5] === '1' ? 1 : (parts[5] === '0' ? 0 : null);
+      const hate = parts[6] === '1' ? 1 : (parts[6] === '0' ? 0 : null);
+      const adult = parts[7] === '1' ? 1 : (parts[7] === '0' ? 0 : null);
+      const prohibited = parts[8] === '1' ? 1 : (parts[8] === '0' ? 0 : null);
+      
+      // Only include rows with valid labels
+      if (clean !== null && vulgar !== null && hate !== null && adult !== null && prohibited !== null) {
+        rows.push({
+          id: parts[0],
+          text: parts[1],
+          clean,
+          vulgar,
+          hate,
+          adult,
+          prohibited
+        });
+      }
     }
   }
   
@@ -123,13 +131,11 @@ function readBlockWords(file: string): Array<{text: string; isOffensive: boolean
   
   // Skip header
   for (let i = 1; i < lines.length; i++) {
-    // Parse CSV: ",count,hate_speech,offensive_language,neither,class,tweet"
-    // class: 0=hate_speech, 1=offensive_language, 2=neither
     const match = /^"(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(.+)"$/.exec(lines[i]);
     if (match) {
       const classLabel = parseInt(match[6], 10);
       const tweet = match[7];
-      const isOffensive = classLabel === 0 || classLabel === 1; // hate_speech or offensive_language
+      const isOffensive = classLabel === 0 || classLabel === 1;
       
       results.push({ text: tweet, isOffensive });
     }
@@ -146,13 +152,75 @@ function extractNgrams(text: string, minWords: number, maxWords: number): string
   for (let n = minWords; n <= maxWords; n++) {
     for (let i = 0; i <= words.length - n; i++) {
       const ngram = words.slice(i, i + n).join(' ');
-      if (ngram.length >= 4) { // Min 4 chars total
+      if (ngram.length >= 4) {
         ngrams.push(ngram);
       }
     }
   }
   
   return ngrams;
+}
+
+/**
+ * Preprocess benign set: compute toTarget once, build inverted index
+ */
+function preprocessBenign(texts: string[]): { rows: PreprocessedRow[]; index: Map<string, Set<number>> } {
+  const rows: PreprocessedRow[] = [];
+  const index = new Map<string, Set<number>>();
+  
+  for (let i = 0; i < texts.length; i++) {
+    const target = toTarget(texts[i]);
+    rows.push({ id: i, target });
+    
+    // Index all words
+    const words = target.spaced.split(/\s+/).filter(w => w.length > 0);
+    for (const word of words) {
+      if (!index.has(word)) {
+        index.set(word, new Set());
+      }
+      index.get(word)!.add(i);
+    }
+  }
+  
+  return { rows, index };
+}
+
+/**
+ * Fast containment check using inverted index
+ */
+function fastContains(
+  candidate: { phrase: string; compiled: ReturnType<typeof compileWord> },
+  preprocessed: { rows: PreprocessedRow[]; index: Map<string, Set<number>> }
+): boolean {
+  // Find rarest word in candidate phrase
+  const candidateWords = candidate.phrase.split(/\s+/).filter(w => w.length > 0);
+  
+  let rarestWord = candidateWords[0];
+  let rarestCount = preprocessed.index.get(rarestWord)?.size ?? Infinity;
+  
+  for (const word of candidateWords) {
+    const count = preprocessed.index.get(word)?.size ?? 0;
+    if (count < rarestCount) {
+      rarestWord = word;
+      rarestCount = count;
+    }
+  }
+  
+  // If rarest word not in index, phrase doesn't appear anywhere
+  const rowIds = preprocessed.index.get(rarestWord);
+  if (!rowIds || rowIds.size === 0) {
+    return false;
+  }
+  
+  // Check only rows containing rarest word
+  for (const rowId of rowIds) {
+    const row = preprocessed.rows[rowId];
+    if (containsTerm(row.target, candidate.compiled)) {
+      return true;
+    }
+  }
+  
+  return false;
 }
 
 function mineCandidatesFromBlockWords(): Candidate[] {
@@ -164,7 +232,6 @@ function mineCandidatesFromBlockWords(): Candidate[] {
   
   console.log(`  Offensive: ${offensive.length}, Non-offensive: ${nonOffensive.length}`);
   
-  // Extract phrases from offensive tweets
   const phraseCounts = new Map<string, number>();
   const phraseInNegative = new Set<string>();
   
@@ -175,7 +242,6 @@ function mineCandidatesFromBlockWords(): Candidate[] {
     }
   }
   
-  // Mark phrases that appear in non-offensive
   for (const row of nonOffensive) {
     const ngrams = extractNgrams(row.text, 2, 4);
     for (const ngram of ngrams) {
@@ -183,7 +249,6 @@ function mineCandidatesFromBlockWords(): Candidate[] {
     }
   }
   
-  // Filter: support >= 5 AND not in negative
   const candidates: Candidate[] = [];
   for (const [phrase, count] of phraseCounts.entries()) {
     if (count >= 5 && !phraseInNegative.has(phrase)) {
@@ -205,7 +270,6 @@ function mineCandidatesFromTagalog(): Candidate[] {
   
   console.log(`  Toxic: ${toxic.length}, Benign: ${benign.length}`);
   
-  // Split toxic 80/20 for mining
   const rng = seededRandom(SEED);
   const shuffled = [...toxic].sort(() => rng() - 0.5);
   const splitIdx = Math.floor(shuffled.length * 0.8);
@@ -223,7 +287,6 @@ function mineCandidatesFromTagalog(): Candidate[] {
     }
   }
   
-  // Mark phrases in benign
   for (const row of benign) {
     const ngrams = extractNgrams(row.text, 2, 4);
     for (const ngram of ngrams) {
@@ -244,11 +307,10 @@ function mineCandidatesFromTagalog(): Candidate[] {
 }
 
 function gateAgainstBenign(candidates: Candidate[]): Candidate[] {
-  console.log(`\n=== STEP 2: Gate Against TRAIN Benign Sets (Non-Circular) ===`);
+  console.log(`\n=== STEP 2: Gate Against TRAIN Benign Sets (Non-Circular, Optimized) ===`);
   console.log(`Input candidates: ${candidates.length}`);
   
-  // Load GATE sets (Tagalog TRAIN benign, English TRAIN benign, marketplace, user)
-  // NEVER load VAL or TEST - those are HELD-OUT for measurement
+  // Load GATE sets
   const tagalogTrainBenign = readCsv(TAGALOG_TRAIN).filter(r => r.label === 0);
   const englishTrainRows = readEnglishCsv(ENGLISH_TRAIN);
   const englishTrainBenign = englishTrainRows.filter(r => r.clean === 1);
@@ -262,54 +324,59 @@ function gateAgainstBenign(candidates: Candidate[]): Candidate[] {
   console.log(`  User benign: ${user.length}`);
   console.log(`  (VAL and TEST splits are HELD-OUT, never used for gating)`);
   
-  const passed: Candidate[] = [];
-  const rejected = new Map<string, number>(); // reason -> count
+  // Preprocess each gate set
+  console.log(`\nPreprocessing gate sets (toTarget + inverted index)...`);
+  const tagalogPreprocessed = preprocessBenign(tagalogTrainBenign.map(r => r.text));
+  console.log(`  Tagalog TRAIN: ${tagalogPreprocessed.rows.length} rows, ${tagalogPreprocessed.index.size} unique words`);
   
-  for (const candidate of candidates) {
+  const englishPreprocessed = preprocessBenign(englishTrainBenign.map(r => r.text));
+  console.log(`  English TRAIN: ${englishPreprocessed.rows.length} rows, ${englishPreprocessed.index.size} unique words`);
+  
+  const marketplacePreprocessed = preprocessBenign(marketplace);
+  console.log(`  Marketplace: ${marketplacePreprocessed.rows.length} rows`);
+  
+  const userPreprocessed = preprocessBenign(user);
+  console.log(`  User: ${userPreprocessed.rows.length} rows`);
+  
+  const passed: Candidate[] = [];
+  const rejected = new Map<string, number>();
+  
+  console.log(`\nGating ${candidates.length} candidates...`);
+  
+  for (let i = 0; i < candidates.length; i++) {
+    if (i % 100 === 0 && i > 0) {
+      console.log(`  Progress: ${i}/${candidates.length} (${passed.length} passed, ${candidates.length - passed.length - (candidates.length - i)} rejected)`);
+    }
+    
+    const candidate = candidates[i];
     const compiled = compileWord(candidate.phrase);
+    const candidateWithCompiled = { phrase: candidate.phrase, compiled };
+    
     let blocked = false;
     let blockReason = '';
     
-    // Check Tagalog TRAIN benign
-    for (const row of tagalogTrainBenign) {
-      if (containsTerm(toTarget(row.text), compiled)) {
-        blocked = true;
-        blockReason = 'Tagalog_TRAIN_benign';
-        break;
-      }
+    // Check Tagalog TRAIN
+    if (fastContains(candidateWithCompiled, tagalogPreprocessed)) {
+      blocked = true;
+      blockReason = 'Tagalog_TRAIN_benign';
     }
     
-    if (!blocked) {
-      // Check English TRAIN benign
-      for (const row of englishTrainBenign) {
-        if (containsTerm(toTarget(row.text), compiled)) {
-          blocked = true;
-          blockReason = 'English_TRAIN_benign';
-          break;
-        }
-      }
+    // Check English TRAIN
+    if (!blocked && fastContains(candidateWithCompiled, englishPreprocessed)) {
+      blocked = true;
+      blockReason = 'English_TRAIN_benign';
     }
     
-    if (!blocked) {
-      // Check marketplace
-      for (const msg of marketplace) {
-        if (containsTerm(toTarget(msg), compiled)) {
-          blocked = true;
-          blockReason = 'Marketplace_benign';
-          break;
-        }
-      }
+    // Check marketplace
+    if (!blocked && fastContains(candidateWithCompiled, marketplacePreprocessed)) {
+      blocked = true;
+      blockReason = 'Marketplace_benign';
     }
     
-    if (!blocked) {
-      // Check user
-      for (const msg of user) {
-        if (containsTerm(toTarget(msg), compiled)) {
-          blocked = true;
-          blockReason = 'User_benign';
-          break;
-        }
-      }
+    // Check user
+    if (!blocked && fastContains(candidateWithCompiled, userPreprocessed)) {
+      blocked = true;
+      blockReason = 'User_benign';
     }
     
     if (blocked) {
@@ -334,7 +401,7 @@ function measureOnValidation(candidates: Candidate[]) {
   console.log(`\n=== STEP 3: Honest Measure on HELD-OUT Validation Splits ===`);
   console.log(`(These splits were NEVER used for gating)`);
   
-  // Load HELD-OUT data (VAL and TEST)
+  // Load HELD-OUT data
   const tagalogVal = readCsv(TAGALOG_VAL);
   const tagalogValToxic = tagalogVal.filter(r => r.label === 1);
   const tagalogValBenign = tagalogVal.filter(r => r.label === 0);
@@ -344,15 +411,13 @@ function measureOnValidation(candidates: Candidate[]) {
   const englishTestBenign = englishTestRows.filter(r => r.clean === 1);
   
   const marketplace = loadBenignMessages(BENIGN_MARKETPLACE);
-  const user = loadBenignMessages(BENIGN_USER);
   
   console.log(`\nHeld-out validation sets:`);
   console.log(`  Tagalog VAL toxic: ${tagalogValToxic.length}`);
   console.log(`  Tagalog VAL benign: ${tagalogValBenign.length}`);
   console.log(`  English TEST toxic: ${englishTestToxic.length}`);
   console.log(`  English TEST benign: ${englishTestBenign.length}`);
-  console.log(`  Marketplace benign: ${marketplace.length} (not split, used in gating)`);
-  console.log(`  User benign: ${user.length} (empty, used in gating)`);
+  console.log(`  Marketplace benign: ${marketplace.length} (not split, was used in gating)`);
   
   // Compile candidates
   const compiled = candidates.map(c => ({ ...c, compiled: compileWord(c.phrase) }));
@@ -412,7 +477,7 @@ function measureOnValidation(candidates: Candidate[]) {
     if (blocked) enBenignBlocked++;
   }
   
-  // Marketplace/user were already used in gating, so 0 expected
+  // Marketplace should be 0 (was used in gating)
   let marketplaceBlocked = 0;
   for (const msg of marketplace) {
     const target = toTarget(msg);
@@ -441,7 +506,7 @@ function measureOnValidation(candidates: Candidate[]) {
   // Gate validation
   const totalBenignBlocked = tlBenignBlocked + enBenignBlocked + marketplaceBlocked;
   if (totalBenignBlocked > 0) {
-    console.log(`\n⚠️  WARNING: ${totalBenignBlocked} benign false positives detected!`);
+    console.log(`\n⚠️  WARNING: ${totalBenignBlocked} benign false positives detected on HELD-OUT sets!`);
     console.log(`  These candidates should NOT have passed the gate.`);
   } else {
     console.log(`\n✅ PASS: 0 benign false positives on HELD-OUT sets (gate worked correctly)`);
@@ -449,28 +514,28 @@ function measureOnValidation(candidates: Candidate[]) {
 }
 
 function main() {
-  console.log('=== Mine Chat Candidate Phrases - Non-Circular ===');
+  console.log('=== Mine Chat Candidate Phrases - Optimized Non-Circular ===');
   console.log('Dataset inventory complete (see dataset-inventory.md)');
-  console.log('  - Explicit_Datasets: IMAGES (JPG) - SKIPPED');
-  console.log('  - Block_Words Part1: TEXT (offensive tweets) - Part1 only, dup is identical');
-  console.log('  - Tagalog toxic: TEXT (chat harassment)');
-  console.log('  - English: processed/ folder with train/test/val splits');
+  console.log('Label audit: English ~80% unlabeled, only clean=1 rows used');
   console.log('');
   console.log('STRICT SPLITS:');
-  console.log('  GATE sets: Tagalog TRAIN benign, English TRAIN benign, marketplace, user, negative rows');
+  console.log('  GATE sets: Tagalog TRAIN benign, English TRAIN benign (labeled only), marketplace, user, negative rows');
   console.log('  HELD-OUT sets: Tagalog VAL benign/toxic, English TEST benign/toxic (NEVER used for gating)');
+  console.log('');
+  console.log('OPTIMIZATIONS:');
+  console.log('  1. Precompute toTarget() once per benign row');
+  console.log('  2. Build inverted index: word -> row IDs');
+  console.log('  3. Look up by rarest word, confirm with containsTerm');
   
   // STEP 1: Mine candidates
   console.log('\n=== STEP 1: Mine Candidates ===');
   
   const allCandidates: Candidate[] = [];
   
-  // From Block_Words (Part1 only, dup is identical)
   if (fs.existsSync(BLOCK_WORDS_PART1)) {
     allCandidates.push(...mineCandidatesFromBlockWords());
   }
   
-  // From Tagalog toxic
   allCandidates.push(...mineCandidatesFromTagalog());
   
   console.log(`\nTotal candidates mined: ${allCandidates.length}`);
@@ -496,16 +561,13 @@ function main() {
   // STEP 4: Output
   console.log(`\n=== STEP 4: Output for User Review ===`);
   
-  // Sort by support descending
   const sorted = passedCandidates.sort((a, b) => b.support - a.support);
-  
-  // Limit to 300
   const top = sorted.slice(0, 300);
   
   const outputPath = path.resolve(__dirname, 'data', 'chat_curated_candidates.txt');
   const lines = [
     '# Mined Chat Candidate Phrases',
-    '# Generated by scripts/mine_chat_candidates.ts (non-circular version)',
+    '# Generated by scripts/mine_chat_candidates_optimized.ts (non-circular, optimized)',
     '# DO NOT commit this file (contains phrase text)',
     '#',
     '# To approve phrases:',
