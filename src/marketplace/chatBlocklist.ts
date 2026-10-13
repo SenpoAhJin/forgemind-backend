@@ -56,25 +56,49 @@ export const CHAT_BLOCKLIST = [
  * Load curated terms from file (if it exists).
  * File missing/empty -> returns empty array, no crash.
  * Lines starting with # are comments and ignored.
+ * 
+ * Logs term counts at startup and warns if input file is newer than kept file.
  */
 function loadCuratedTerms(): string[] {
   try {
-    const curatedFile = path.join(__dirname, '..', '..', 'scripts', 'data', 'chat_curated_terms_kept.txt');
-    if (!fs.existsSync(curatedFile)) {
+    const scriptDir = path.join(__dirname, '..', '..', 'scripts', 'data');
+    const keptFile = path.join(scriptDir, 'chat_curated_terms_kept.txt');
+    const inputFile = path.join(scriptDir, 'chat_curated_terms.txt');
+    
+    if (!fs.existsSync(keptFile)) {
       return [];
     }
-    const content = fs.readFileSync(curatedFile, 'utf8');
-    return content
+    
+    const content = fs.readFileSync(keptFile, 'utf8');
+    const terms = content
       .split('\n')
       .map(line => line.trim())
       .filter(line => line && !line.startsWith('#'));
+    
+    // Check staleness
+    if (fs.existsSync(inputFile)) {
+      const keptStat = fs.statSync(keptFile);
+      const inputStat = fs.statSync(inputFile);
+      
+      if (inputStat.mtime > keptStat.mtime) {
+        const timeDiff = Math.floor((inputStat.mtime.getTime() - keptStat.mtime.getTime()) / 1000);
+        console.warn(`[chat-filter] WARNING: chat_curated_terms.txt is newer than kept file by ${timeDiff}s - run npm run chat:curated to regenerate`);
+      }
+    }
+    
+    return terms;
   } catch (err) {
-    console.error('Warning: Failed to load curated chat terms:', err);
+    console.error('[chat-filter] Warning: Failed to load curated chat terms:', err);
     return [];
   }
 }
 
 export const CURATED_TERMS = loadCuratedTerms();
+
+// Log term counts at module load (startup)
+const baseEnglish = CHAT_BLOCKLIST.filter(t => !/putangina|gago|tanga|bobo|hayop|bwisit/.test(t)).length;
+const baseTagalog = CHAT_BLOCKLIST.filter(t => /putangina|gago|tanga|bobo|hayop|bwisit/.test(t)).length;
+console.log(`[chat-filter] Base terms: ${CHAT_BLOCKLIST.length} (${baseEnglish} EN, ${baseTagalog} TL), curated loaded: ${CURATED_TERMS.length}`);
 
 // Combined blocklist for export
 export const FULL_BLOCKLIST = [...CHAT_BLOCKLIST, ...CURATED_TERMS];
