@@ -441,9 +441,10 @@ All requirements met. All tests passing. No outstanding issues.
 
 **Test case: "sarap mo"**
 - Phrase tested: Sexual comment aimed at person (user reported as delivered harassment)
-- Result: **FAILED** - 2 false positives in Tagalog train benign
-- Decision: Phrase dropped automatically (appears in legitimate contexts like "sarap mo kausap" = you're nice to talk to)
-- Measurement: 4 train toxic + 3 val toxic hits = does catch harassment, but too high false positive risk
+- Result: **FAILED** - 2 false positives in Tagalog train benign (0.03% of 6,413 benign messages)
+- Toxic hits: 7 total (4 train + 3 val) = does catch harassment
+- Decision: Phrase dropped automatically (appears in legitimate contexts like "sarap mo kausap" = you're nice to talk to, "sarap mo magluto" = you cook well)
+- Obfuscation: 45% blocked (5/11 simple variants: spaces 33%, punctuation 80%, mixed 0%)
 
 **Current state:**
 - Base terms: 26
@@ -453,3 +454,11 @@ All requirements met. All tests passing. No outstanding issues.
 **Baseline measurement (26 base terms, 0 curated):**
 - Tagalog val: 152/1174 toxic (12.95%), 5/1604 benign blocked (0.31%)
 - Marketplace: 0/210 blocked (0.00%)
+
+**Test results (Oct 13, 2026 17:50):**
+- TypeScript: `npx tsc --noEmit` exit 0
+- Chat verification: 50/50 PASS, 0 leftover
+- Offers regression: 20/20 PASS, 0 leftover
+- Baseline leftovers: verify-chat-% 0, verify-offers-% 40 (historical Oct 11-12)
+
+**Session:** Oct 13, 2026 17:20-17:50 (30 minutes)
