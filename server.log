@@ -1,0 +1,15 @@
+
+> forgemind-backend@0.1.0 dev
+> ts-node src/index.ts
+
+forgemind-backend listening on 0.0.0.0:3000 (development)
+CORS origins: http://localhost:8081, http://localhost:19006, http://localhost:8082 (plus private-LAN origins on Expo dev ports)
+  phone / LAN:  http://192.168.254.168:3000
+  this PC:      http://localhost:3000
+  android emu:  http://10.0.2.2:3000
+  health:       GET /health
+database: OK
+[marketplace] listing rejected user=0681664f-cb35-4cf8-9127-8dc419696228 gate=duplicate status=409
+[marketplace] listing rejected user=bf147df8-51af-45a0-a7c8-56dbf1f396c4 gate=duplicate status=409
+[marketplace] listing rejected user=1077cd26-2739-40f7-9e66-5aa43657635e gate=duplicate status=409
+[marketplace] listing rejected user=a50d1c04-60bf-45a2-8773-401172bda0aa gate=duplicate status=409
