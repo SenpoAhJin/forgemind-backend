@@ -17,7 +17,12 @@
  * - Total: 25 terms
  * 
  * Rule-based only. Chat content never classified or used as AI input (thesis requirement).
+ * 
+ * CURATED TERMS: User-supplied phrases loaded from scripts/data/chat_curated_terms_kept.txt at startup.
  */
+
+import * as fs from 'fs';
+import * as path from 'path';
 
 export const CHAT_BLOCKLIST = [
   "fuck you",
@@ -46,3 +51,30 @@ export const CHAT_BLOCKLIST = [
   "fuck me",
   "wanna fuck"
 ];
+
+/**
+ * Load curated terms from file (if it exists).
+ * File missing/empty -> returns empty array, no crash.
+ * Lines starting with # are comments and ignored.
+ */
+function loadCuratedTerms(): string[] {
+  try {
+    const curatedFile = path.join(__dirname, '..', '..', 'scripts', 'data', 'chat_curated_terms_kept.txt');
+    if (!fs.existsSync(curatedFile)) {
+      return [];
+    }
+    const content = fs.readFileSync(curatedFile, 'utf8');
+    return content
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith('#'));
+  } catch (err) {
+    console.error('Warning: Failed to load curated chat terms:', err);
+    return [];
+  }
+}
+
+export const CURATED_TERMS = loadCuratedTerms();
+
+// Combined blocklist for export
+export const FULL_BLOCKLIST = [...CHAT_BLOCKLIST, ...CURATED_TERMS];

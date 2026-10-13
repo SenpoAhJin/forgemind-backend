@@ -6,12 +6,17 @@
  */
 
 import { compileWord, containsTerm, toTarget } from '../moderation/normalize';
-import { CHAT_BLOCKLIST } from './chatBlocklist';
+import { FULL_BLOCKLIST, CURATED_TERMS } from './chatBlocklist';
 import * as fs from 'fs';
 import * as path from 'path';
 
 // Compile blocklist once at module load
-const compiled = CHAT_BLOCKLIST.map(term => compileWord(term));
+const compiled = FULL_BLOCKLIST.map(term => compileWord(term));
+
+// Log curated terms count at startup (not the terms themselves)
+if (CURATED_TERMS.length > 0) {
+  console.log(`Chat moderation: Loaded ${CURATED_TERMS.length} curated term(s)`);
+}
 
 export function screenMessage(body: string): { blocked: boolean } {
   // R9: Message body is NEVER logged
