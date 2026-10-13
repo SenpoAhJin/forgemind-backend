@@ -584,15 +584,16 @@ async function runTests() {
         if (errData.error === 'message_blocked') {
           pass(`Curated phrase ${i+1} blocked with 422`);
           
-          // Verify NOT saved to DB
+          // Verify NOT saved to DB (check that no messages exist with this phrase)
           const check = await pool.query(
-            'SELECT COUNT(*) FROM chat_messages WHERE thread_id = $1',
+            'SELECT body FROM chat_messages WHERE thread_id = $1 ORDER BY created_at DESC LIMIT 1',
             [testThread.thread_id]
           );
-          if (parseInt(check.rows[0].count) === 0) {
+          // Since we created a fresh thread, ANY message means it was saved despite 422
+          if (check.rows.length === 0) {
             pass(`Curated phrase ${i+1} not saved to DB`);
           } else {
-            fail(`Curated phrase ${i+1} DB check`, 'message found in DB');
+            fail(`Curated phrase ${i+1} DB check`, `message found in DB despite 422`);
           }
         } else {
           fail(`Curated phrase ${i+1} error type`, `expected message_blocked, got ${errData.error}`);
@@ -612,8 +613,11 @@ async function runTests() {
       "Salamat mo"
     ];
     
+    // Use first thread from earlier tests
+    const firstThread = testIds.threads[0];
+    
     for (const msg of benignWithSharedWords) {
-      res = await fetchWithAuth(`/marketplace/chat/threads/${threadIds[0]}/messages`, buyer.token, {
+      res = await fetchWithAuth(`/marketplace/chat/threads/${firstThread}/messages`, buyer.token, {
         method: 'POST',
         body: JSON.stringify({ body: msg })
       });
