@@ -16,6 +16,9 @@ export interface CsvRow {
 /**
  * Parse CSV content with proper quote handling.
  * Returns array of row objects with header keys.
+ * 
+ * Special handling: if entire header is one quoted field with commas,
+ * treat it as a CSV-within-CSV and split it properly.
  */
 export function parseCsv(content: string, hasHeader = true): CsvRow[] {
   const lines: string[][] = [];
@@ -91,11 +94,26 @@ export function parseCsv(content: string, hasHeader = true): CsvRow[] {
   }
   
   // First line is header
-  const header = lines[0];
+  let header = lines[0];
+  
+  // Special case: entire header is one field containing comma-separated header names
+  // (e.g., ",count,hate_speech,..." as a single quoted field)
+  const headerIsQuotedCsv = header.length === 1 && header[0].includes(',');
+  if (headerIsQuotedCsv) {
+    header = header[0].split(',');
+  }
+  
   const rows: CsvRow[] = [];
   
   for (let i = 1; i < lines.length; i++) {
-    const row = lines[i];
+    let row = lines[i];
+    
+    // If header was a quoted CSV, data rows are likely the same format
+    // (one field containing comma-separated values)
+    if (headerIsQuotedCsv && row.length === 1 && row[0].includes(',')) {
+      row = row[0].split(',');
+    }
+    
     const obj: CsvRow = {};
     
     for (let j = 0; j < header.length; j++) {
