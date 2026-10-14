@@ -141,6 +141,13 @@ import chatRouter from './marketplace/chatRouter';
 app.use('/marketplace/chat', chatRouter);
 
 /**
+ * AI Attire Matcher: proxies matching requests to Flask AI service.
+ * Requires verified marketplace account.
+ */
+import matcherRouter from './ai/matcherRouter';
+app.use('/api/ai', matcherRouter);
+
+/**
  * Marketplace Registration: cosplayer submits, reads back own registration.
  * See src/marketplace/router.ts for endpoint details
  */
