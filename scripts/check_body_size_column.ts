@@ -3,11 +3,15 @@
  * Read-only SELECT/COUNT only
  */
 
+import { config } from 'dotenv';
 import { query } from '../src/db';
+
+// Load environment variables
+config();
 
 async function checkBodySizeColumn() {
   try {
-    // Check if column exists
+    // Check if column exists (query() returns rows array directly)
     const columnCheck = await query(`
       SELECT column_name, data_type, is_nullable
       FROM information_schema.columns
@@ -17,29 +21,29 @@ async function checkBodySizeColumn() {
     `);
 
     console.log('=== Column Existence Check ===');
-    if (columnCheck.rows.length === 0) {
+    if (columnCheck.length === 0) {
       console.log('body_size_slider column: NOT FOUND in users table');
     } else {
       console.log('body_size_slider column: EXISTS');
-      console.log('Details:', columnCheck.rows[0]);
+      console.log('Details:', columnCheck[0]);
     }
     console.log('');
 
     // Count users with non-null values
-    const countResult = await query(`
+    const countResult = await query<{ total_users: string }>(`
       SELECT COUNT(*) as total_users FROM users;
     `);
     console.log('=== User Counts ===');
-    console.log(`Total users: ${countResult.rows[0].total_users}`);
+    console.log(`Total users: ${countResult[0].total_users}`);
 
     // Only check for non-null if column exists
-    if (columnCheck.rows.length > 0) {
-      const nonNullResult = await query(`
+    if (columnCheck.length > 0) {
+      const nonNullResult = await query<{ non_null_count: string }>(`
         SELECT COUNT(*) as non_null_count
         FROM users
         WHERE body_size_slider IS NOT NULL;
       `);
-      console.log(`Users with body_size_slider NOT NULL: ${nonNullResult.rows[0].non_null_count}`);
+      console.log(`Users with body_size_slider NOT NULL: ${nonNullResult[0].non_null_count}`);
     }
 
     process.exit(0);
