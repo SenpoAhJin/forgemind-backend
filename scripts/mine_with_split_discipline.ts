@@ -145,14 +145,14 @@ function readBlockWords(file: string): Array<{ text: string; isOffensive: boolea
   if (!fs.existsSync(file)) return [];
   
   const content = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
-  const rows = parseCsv(content, false); // No header
+  const rows = parseCsv(content, true); // Has header (quoted CSV format)
   const results: Array<{ text: string; isOffensive: boolean }> = [];
   
   for (const row of rows) {
-    const cols = Object.values(row);
-    if (cols.length >= 7) {
-      const classLabel = parseInt(cols[5], 10);
-      const tweet = cols[6];
+    // Header: "", "count", "hate_speech", "offensive_language", "neither", "class", "tweet"
+    const classLabel = parseInt(row['class'], 10);
+    const tweet = row['tweet'];
+    if (tweet && !isNaN(classLabel)) {
       const isOffensive = classLabel === 0 || classLabel === 1;
       results.push({ text: tweet, isOffensive });
     }
@@ -232,30 +232,29 @@ function fastContains(
 
 function mineCandidatesFromSource(
   toxicTexts: string[],
-  negativeTexts: string[],
   sourceName: string,
   minSupport: number
 ): Candidate[] {
   const phraseCounts = new Map<string, number>();
-  const phraseInNegative = new Set<string>();
   
-  for (const text of toxicTexts) {
-    const ngrams = extractNgrams(text, 2, 4);
-    for (const ngram of ngrams) {
+  // Count toxic n-grams (dedupe per row with Set to avoid quadratic behavior)
+  console.log(`  Mining ${toxicTexts.length} toxic texts...`);
+  for (let i = 0; i < toxicTexts.length; i++) {
+    if (i > 0 && i % 5000 === 0) {
+      console.log(`    Processed ${i}/${toxicTexts.length} toxic texts, found ${phraseCounts.size} unique phrases`);
+    }
+    const ngrams = extractNgrams(toxicTexts[i], 2, 4);
+    const uniqueNgrams = new Set(ngrams); // Dedupe within this row
+    for (const ngram of uniqueNgrams) {
       phraseCounts.set(ngram, (phraseCounts.get(ngram) || 0) + 1);
     }
   }
+  console.log(`  Found ${phraseCounts.size} unique phrases from toxic texts`);
   
-  for (const text of negativeTexts) {
-    const ngrams = extractNgrams(text, 2, 4);
-    for (const ngram of ngrams) {
-      phraseInNegative.add(ngram);
-    }
-  }
-  
+  // Filter by support only (gate check happens later)
   const candidates: Candidate[] = [];
   for (const [phrase, count] of phraseCounts.entries()) {
-    if (count >= minSupport && !phraseInNegative.has(phrase)) {
+    if (count >= minSupport) {
       candidates.push({ phrase, source: sourceName, support: count });
     }
   }
@@ -267,17 +266,25 @@ function gateAndMeasure(
   candidates: Candidate[],
   gateBenign: { rows: PreprocessedRow[]; index: Map<string, Set<number>> },
   devBenign: string[],
-  devToxic: string[]
+  devToxic: string[],
+  maxCandidates = 10000  // Limit for performance
 ): {
   passed: Candidate[];
   rejected: number;
   devToxicCaught: number;
   devBenignBlocked: number;
 } {
+  // Sort by support desc, take top N
+  const topCandidates = candidates
+    .sort((a, b) => b.support - a.support)
+    .slice(0, maxCandidates);
+  
+  console.log(`  Gate checking top ${topCandidates.length} candidates (from ${candidates.length} mined)...`);
+  
   const passed: Candidate[] = [];
   let rejected = 0;
   
-  for (const candidate of candidates) {
+  for (const candidate of topCandidates) {
     const compiled = compileWord(candidate.phrase);
     const candidateWithCompiled = { phrase: candidate.phrase, compiled };
     
@@ -392,7 +399,6 @@ function main() {
   for (const threshold of thresholds) {
     const mined = mineCandidatesFromSource(
       tagalogMineToxic.map(r => r.text),
-      tagalogMineBenign.map(r => r.text),
       'Tagalog',
       threshold
     );
@@ -418,7 +424,6 @@ function main() {
     console.log(`  CHOSEN: threshold ${tagalogBestThreshold} (lowest with 0 DEV benign blocks)\n`);
     const mined = mineCandidatesFromSource(
       tagalogMineToxic.map(r => r.text),
-      tagalogMineBenign.map(r => r.text),
       'Tagalog',
       tagalogBestThreshold
     );
@@ -452,7 +457,6 @@ function main() {
   for (const threshold of thresholds) {
     const mined = mineCandidatesFromSource(
       englishMineToxic.map(r => r.text),
-      englishMineBenign.map(r => r.text),
       'English',
       threshold
     );
@@ -478,7 +482,6 @@ function main() {
     console.log(`  CHOSEN: threshold ${englishBestThreshold} (lowest with 0 DEV benign blocks)\n`);
     const mined = mineCandidatesFromSource(
       englishMineToxic.map(r => r.text),
-      englishMineBenign.map(r => r.text),
       'English',
       englishBestThreshold
     );
@@ -512,7 +515,6 @@ function main() {
   for (const threshold of thresholds) {
     const mined = mineCandidatesFromSource(
       blockWordsMineOffensive.map(r => r.text),
-      blockWordsMineNegative.map(r => r.text),
       'BlockWords',
       threshold
     );
@@ -538,7 +540,6 @@ function main() {
     console.log(`  CHOSEN: threshold ${blockWordsBestThreshold} (lowest with 0 DEV benign blocks)\n`);
     const mined = mineCandidatesFromSource(
       blockWordsMineOffensive.map(r => r.text),
-      blockWordsMineNegative.map(r => r.text),
       'BlockWords',
       blockWordsBestThreshold
     );
