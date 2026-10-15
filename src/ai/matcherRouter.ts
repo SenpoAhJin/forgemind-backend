@@ -8,6 +8,8 @@
 import { Router, Request, Response } from 'express';
 import { requireSession } from '../auth/session';
 import { config } from '../config';
+import { colorNameToHex } from './colorNames';
+import { mapToFlaskSlot, getSubcategory } from './slotMapping';
 
 const matcherRouter = Router();
 
@@ -75,8 +77,10 @@ export const DEFAULT_COLOR_FALLBACK = '#808080';
  */
 export function transformToFlaskFormat(attire: OwnedAttire[]): FlaskOwnedItem[] {
   return attire.map(item => {
-    // Extract category and subcategory from auto_categorized_type
-    const category = item.auto_categorized_type?.toLowerCase() || 'other';
+    // Map broad type to Flask slot using keywords (RULE-BASED adapter)
+    const originalType = item.auto_categorized_type?.toLowerCase() || 'other';
+    const flaskSlot = mapToFlaskSlot(item.original_input_text, originalType);
+    const subcategory = getSubcategory(item.original_input_text, flaskSlot);
     
     // Extract tags from style and original text
     const tags: string[] = [];
@@ -95,12 +99,15 @@ export function transformToFlaskFormat(attire: OwnedAttire[]): FlaskOwnedItem[] 
       tags.push(...words);
     }
 
+    // Convert color name to hex (RULE-BASED adapter)
+    const colorHex = colorNameToHex(item.auto_categorized_color, DEFAULT_COLOR_FALLBACK);
+
     return {
       id: item.attire_id,
       name: item.original_input_text || 'Unnamed Item',
-      category: category,
-      subcategory: category,
-      color: item.auto_categorized_color || DEFAULT_COLOR_FALLBACK,
+      category: flaskSlot,
+      subcategory: subcategory,
+      color: colorHex,
       tags: [...new Set(tags)], // Remove duplicates
     };
   });
