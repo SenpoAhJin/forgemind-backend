@@ -67,10 +67,13 @@ interface FlaskMatchResponse {
   };
 }
 
+/** Default color fallback for items with no color */
+export const DEFAULT_COLOR_FALLBACK = '#808080';
+
 /**
  * Transform mobile OwnedAttire to Flask owned_items format
  */
-function transformToFlaskFormat(attire: OwnedAttire[]): FlaskOwnedItem[] {
+export function transformToFlaskFormat(attire: OwnedAttire[]): FlaskOwnedItem[] {
   return attire.map(item => {
     // Extract category and subcategory from auto_categorized_type
     const category = item.auto_categorized_type?.toLowerCase() || 'other';
@@ -97,10 +100,110 @@ function transformToFlaskFormat(attire: OwnedAttire[]): FlaskOwnedItem[] {
       name: item.original_input_text || 'Unnamed Item',
       category: category,
       subcategory: category,
-      color: item.auto_categorized_color || '#808080',
+      color: item.auto_categorized_color || DEFAULT_COLOR_FALLBACK,
       tags: [...new Set(tags)], // Remove duplicates
     };
   });
+}
+
+/**
+ * Validate character_variant_id and owned_attire request
+ * Returns error response or null if valid
+ */
+export function validateMatchRequest(body: MatchRequest): { status: number; error: string; message: string } | null {
+  // Validate character_variant_id
+  if (!body.character_variant_id || typeof body.character_variant_id !== 'string') {
+    return {
+      status: 400,
+      error: 'validation_error',
+      message: 'character_variant_id is required and must be a string',
+    };
+  }
+
+  // Validate ID format: lowercase alphanumeric, underscore, hyphen, 1-100 chars
+  if (!/^[a-z0-9][a-z0-9_-]{0,100}$/.test(body.character_variant_id)) {
+    return {
+      status: 400,
+      error: 'validation_error',
+      message: 'character_variant_id must match ^[a-z0-9][a-z0-9_-]{0,100}$',
+    };
+  }
+
+  // Validate owned_attire
+  if (!Array.isArray(body.owned_attire)) {
+    return {
+      status: 400,
+      error: 'validation_error',
+      message: 'owned_attire must be an array',
+    };
+  }
+
+  if (body.owned_attire.length > 100) {
+    return {
+      status: 400,
+      error: 'validation_error',
+      message: 'owned_attire array exceeds maximum length of 100',
+    };
+  }
+
+  // Validate owned_attire items
+  for (const item of body.owned_attire) {
+    if (!item.attire_id || typeof item.attire_id !== 'string' || item.attire_id.length > 100) {
+      return {
+        status: 400,
+        error: 'validation_error',
+        message: 'Each attire item must have a valid attire_id (string, max 100 chars)',
+      };
+    }
+    if (item.original_input_text && item.original_input_text.length > 500) {
+      return {
+        status: 400,
+        error: 'validation_error',
+        message: 'original_input_text exceeds maximum length of 500',
+      };
+    }
+  }
+
+  return null; // Valid
+}
+
+/**
+ * Map Flask error response to backend error
+ */
+export function mapFlaskError(statusCode: number): { status: number; error: string; message: string } {
+  if (statusCode === 404) {
+    return {
+      status: 404,
+      error: 'character_not_found',
+      message: 'Character variant not found in AI database',
+    };
+  }
+
+  // Any other Flask error -> 502
+  return {
+    status: 502,
+    error: 'ai_service_error',
+    message: 'AI matching service returned an error',
+  };
+}
+
+/**
+ * Map Flask fetch error to backend error
+ */
+export function mapFlaskFetchError(err: Error): { status: number; error: string; message: string } {
+  if (err.name === 'AbortError') {
+    return {
+      status: 503,
+      error: 'ai_service_timeout',
+      message: 'AI matching service timed out',
+    };
+  }
+
+  return {
+    status: 503,
+    error: 'ai_service_unavailable',
+    message: 'AI matching service is unreachable',
+  };
 }
 
 /**
@@ -124,57 +227,14 @@ matcherRouter.post('/match', async (req: Request, res: Response) => {
   try {
     const body = req.body as MatchRequest;
 
-    // Validate character_variant_id
-    if (!body.character_variant_id || typeof body.character_variant_id !== 'string') {
-      res.status(400).json({
-        error: 'validation_error',
-        message: 'character_variant_id is required and must be a string',
+    // Validate request
+    const validationError = validateMatchRequest(body);
+    if (validationError) {
+      res.status(validationError.status).json({
+        error: validationError.error,
+        message: validationError.message,
       });
       return;
-    }
-
-    // Validate ID format: lowercase alphanumeric, underscore, hyphen, 1-100 chars
-    if (!/^[a-z0-9][a-z0-9_-]{0,100}$/.test(body.character_variant_id)) {
-      res.status(400).json({
-        error: 'validation_error',
-        message: 'character_variant_id must match ^[a-z0-9][a-z0-9_-]{0,100}$',
-      });
-      return;
-    }
-
-    // Validate owned_attire
-    if (!Array.isArray(body.owned_attire)) {
-      res.status(400).json({
-        error: 'validation_error',
-        message: 'owned_attire must be an array',
-      });
-      return;
-    }
-
-    if (body.owned_attire.length > 100) {
-      res.status(400).json({
-        error: 'validation_error',
-        message: 'owned_attire array exceeds maximum length of 100',
-      });
-      return;
-    }
-
-    // Validate owned_attire items
-    for (const item of body.owned_attire) {
-      if (!item.attire_id || typeof item.attire_id !== 'string' || item.attire_id.length > 100) {
-        res.status(400).json({
-          error: 'validation_error',
-          message: 'Each attire item must have a valid attire_id (string, max 100 chars)',
-        });
-        return;
-      }
-      if (item.original_input_text && item.original_input_text.length > 500) {
-        res.status(400).json({
-          error: 'validation_error',
-          message: 'original_input_text exceeds maximum length of 500',
-        });
-        return;
-      }
     }
 
     // Transform mobile format to Flask format
@@ -207,18 +267,10 @@ matcherRouter.post('/match', async (req: Request, res: Response) => {
         const errorText = await response.text();
         console.error('[matcher] Flask error:', response.status, errorText);
         
-        if (response.status === 404) {
-          res.status(404).json({
-            error: 'character_not_found',
-            message: 'Character variant not found in AI database',
-          });
-          return;
-        }
-
-        // Any other Flask error status -> 502
-        res.status(502).json({
-          error: 'ai_service_error',
-          message: 'AI matching service returned an error',
+        const errorResponse = mapFlaskError(response.status);
+        res.status(errorResponse.status).json({
+          error: errorResponse.error,
+          message: errorResponse.message,
         });
         return;
       }
@@ -231,20 +283,11 @@ matcherRouter.post('/match', async (req: Request, res: Response) => {
     } catch (fetchErr) {
       clearTimeout(timeoutId);
       
-      // Flask unreachable or timeout -> 503
-      if ((fetchErr as Error).name === 'AbortError') {
-        console.error('[matcher] Flask timeout');
-        res.status(503).json({
-          error: 'ai_service_timeout',
-          message: 'AI matching service timed out',
-        });
-        return;
-      }
-
-      console.error('[matcher] Flask unreachable:', fetchErr);
-      res.status(503).json({
-        error: 'ai_service_unavailable',
-        message: 'AI matching service is unreachable',
+      const errorResponse = mapFlaskFetchError(fetchErr as Error);
+      console.error('[matcher] Flask fetch error:', errorResponse.message);
+      res.status(errorResponse.status).json({
+        error: errorResponse.error,
+        message: errorResponse.message,
       });
       return;
     }
