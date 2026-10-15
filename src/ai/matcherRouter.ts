@@ -7,7 +7,6 @@
 
 import { Router, Request, Response } from 'express';
 import { requireSession } from '../auth/session';
-import { requireMarketplaceUser, isVerifiedMarketplaceUser } from '../marketplace/rules';
 import { config } from '../config';
 
 const matcherRouter = Router();
@@ -32,11 +31,6 @@ interface FlaskOwnedItem {
 interface MatchRequest {
   character_variant_id: string;
   owned_attire: OwnedAttire[];
-  user_body_settings?: {
-    body_type: 'male' | 'female';
-    height: number;
-    size: number;
-  };
 }
 
 interface FlaskMatchResponse {
@@ -113,13 +107,12 @@ function transformToFlaskFormat(attire: OwnedAttire[]): FlaskOwnedItem[] {
  * POST /api/ai/match
  * Match user's attire to a character variant
  *
- * Auth: requires verified marketplace user
+ * Auth: requires valid session (not marketplace-specific)
  *
  * Request body:
  * {
  *   "character_variant_id": "gojo-satoru_season-2-uniform",
- *   "owned_attire": [OwnedAttire[]],
- *   "user_body_settings": { body_type, height, size }
+ *   "owned_attire": [OwnedAttire[]]
  * }
  *
  * Response: Flask match result (see FlaskMatchResponse interface)
@@ -128,35 +121,60 @@ matcherRouter.post('/match', async (req: Request, res: Response) => {
   const session = await requireSession(req, res);
   if (!session) return;
 
-  const caller = await requireMarketplaceUser(req, res);
-  if (!caller) return;
-
-  if (!isVerifiedMarketplaceUser(caller)) {
-    res.status(403).json({
-      error: 'marketplace_verification_required',
-      message: 'Attire matching requires verified marketplace account',
-    });
-    return;
-  }
-
   try {
     const body = req.body as MatchRequest;
 
-    // Validate required fields
-    if (!body.character_variant_id) {
+    // Validate character_variant_id
+    if (!body.character_variant_id || typeof body.character_variant_id !== 'string') {
       res.status(400).json({
         error: 'validation_error',
-        message: 'character_variant_id is required',
+        message: 'character_variant_id is required and must be a string',
       });
       return;
     }
 
+    // Validate ID format: lowercase alphanumeric, underscore, hyphen, 1-100 chars
+    if (!/^[a-z0-9][a-z0-9_-]{0,100}$/.test(body.character_variant_id)) {
+      res.status(400).json({
+        error: 'validation_error',
+        message: 'character_variant_id must match ^[a-z0-9][a-z0-9_-]{0,100}$',
+      });
+      return;
+    }
+
+    // Validate owned_attire
     if (!Array.isArray(body.owned_attire)) {
       res.status(400).json({
         error: 'validation_error',
         message: 'owned_attire must be an array',
       });
       return;
+    }
+
+    if (body.owned_attire.length > 100) {
+      res.status(400).json({
+        error: 'validation_error',
+        message: 'owned_attire array exceeds maximum length of 100',
+      });
+      return;
+    }
+
+    // Validate owned_attire items
+    for (const item of body.owned_attire) {
+      if (!item.attire_id || typeof item.attire_id !== 'string' || item.attire_id.length > 100) {
+        res.status(400).json({
+          error: 'validation_error',
+          message: 'Each attire item must have a valid attire_id (string, max 100 chars)',
+        });
+        return;
+      }
+      if (item.original_input_text && item.original_input_text.length > 500) {
+        res.status(400).json({
+          error: 'validation_error',
+          message: 'original_input_text exceeds maximum length of 500',
+        });
+        return;
+      }
     }
 
     // Transform mobile format to Flask format
@@ -166,42 +184,70 @@ matcherRouter.post('/match', async (req: Request, res: Response) => {
     const flaskRequest = {
       character_variant_id: body.character_variant_id,
       owned_items: flaskItems,
-      user_body_settings: body.user_body_settings,
     };
 
-    // Call Flask AI service
+    // Call Flask AI service with 8 second timeout
     const flaskUrl = config.flaskAiUrl || 'http://localhost:5000';
-    const response = await fetch(`${flaskUrl}/api/match`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(flaskRequest),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[matcher] Flask error:', response.status, errorText);
-      
-      if (response.status === 404) {
-        res.status(404).json({
-          error: 'character_not_found',
-          message: 'Character variant not found in AI database',
+    try {
+      const response = await fetch(`${flaskUrl}/api/match`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(flaskRequest),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[matcher] Flask error:', response.status, errorText);
+        
+        if (response.status === 404) {
+          res.status(404).json({
+            error: 'character_not_found',
+            message: 'Character variant not found in AI database',
+          });
+          return;
+        }
+
+        // Any other Flask error status -> 502
+        res.status(502).json({
+          error: 'ai_service_error',
+          message: 'AI matching service returned an error',
         });
         return;
       }
 
-      res.status(502).json({
-        error: 'ai_service_error',
-        message: 'AI matching service unavailable',
+      const flaskResult = await response.json() as FlaskMatchResponse;
+
+      // Return Flask result directly (mobile can handle the format)
+      res.json(flaskResult);
+
+    } catch (fetchErr) {
+      clearTimeout(timeoutId);
+      
+      // Flask unreachable or timeout -> 503
+      if ((fetchErr as Error).name === 'AbortError') {
+        console.error('[matcher] Flask timeout');
+        res.status(503).json({
+          error: 'ai_service_timeout',
+          message: 'AI matching service timed out',
+        });
+        return;
+      }
+
+      console.error('[matcher] Flask unreachable:', fetchErr);
+      res.status(503).json({
+        error: 'ai_service_unavailable',
+        message: 'AI matching service is unreachable',
       });
       return;
     }
-
-    const flaskResult = await response.json() as FlaskMatchResponse;
-
-    // Return Flask result directly (mobile can handle the format)
-    res.json(flaskResult);
 
   } catch (err) {
     console.error('[matcher] Unexpected error:', err);
