@@ -31,9 +31,12 @@ function isPrivateLanHost(host: string): boolean {
   if (!m) return false;
   const a = Number(m[1]);
   const b = Number(m[2]);
+  // RFC1918 private ranges
   if (a === 10) return true;
   if (a === 192 && b === 168) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
+  // Tailscale CGNAT range: 100.64.0.0/10 (100.64.0.0 to 100.127.255.255)
+  if (a === 100 && b >= 64 && b <= 127) return true;
   return false;
 }
 

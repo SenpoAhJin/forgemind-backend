@@ -68,11 +68,15 @@ function isPrivateLanHost(host) {
         return false;
     const a = Number(m[1]);
     const b = Number(m[2]);
+    // RFC1918 private ranges
     if (a === 10)
         return true;
     if (a === 192 && b === 168)
         return true;
     if (a === 172 && b >= 16 && b <= 31)
+        return true;
+    // Tailscale CGNAT range: 100.64.0.0/10 (100.64.0.0 to 100.127.255.255)
+    if (a === 100 && b >= 64 && b <= 127)
         return true;
     return false;
 }
@@ -170,6 +174,12 @@ app.use('/marketplace/offers', offersRouter_1.default);
  */
 const chatRouter_1 = __importDefault(require("./marketplace/chatRouter"));
 app.use('/marketplace/chat', chatRouter_1.default);
+/**
+ * AI Attire Matcher: proxies matching requests to Flask AI service.
+ * Requires verified marketplace account.
+ */
+const matcherRouter_1 = __importDefault(require("./ai/matcherRouter"));
+app.use('/api/ai', matcherRouter_1.default);
 /**
  * Marketplace Registration: cosplayer submits, reads back own registration.
  * See src/marketplace/router.ts for endpoint details
