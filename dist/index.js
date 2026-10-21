@@ -51,6 +51,7 @@ const config_1 = require("./config");
 const db_1 = require("./db");
 const errors_1 = require("./db/errors");
 const settingsRegistry_1 = require("./settings/settingsRegistry");
+const expirySweep_1 = require("./trades/expirySweep");
 const app = (0, express_1.default)();
 /**
  * Ports an Expo dev server may be reached on. A browser origin is only accepted
@@ -280,9 +281,12 @@ const server = app.listen(config_1.config.port, config_1.config.host, async () =
     }
     // Start photo cleanup timer
     (0, photoCleanup_1.startPhotoCleanup)();
+    // Start trade expiry sweep
+    (0, expirySweep_1.startExpirySweep)();
 });
 const shutdown = async () => {
     (0, photoCleanup_1.stopPhotoCleanup)();
+    (0, expirySweep_1.stopExpirySweep)();
     server.close();
     await db_1.pool.end();
     process.exit(0);

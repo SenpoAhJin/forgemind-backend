@@ -13,6 +13,7 @@ import { config } from './config';
 import { pool, query } from './db';
 import { classifyDbError } from './db/errors';
 import { verifyRequiredSettings } from './settings/settingsRegistry';
+import { startExpirySweep, stopExpirySweep } from './trades/expirySweep';
 
 const app = express();
 
@@ -258,10 +259,14 @@ const server = app.listen(config.port, config.host, async () => {
   
   // Start photo cleanup timer
   startPhotoCleanup();
+  
+  // Start trade expiry sweep
+  startExpirySweep();
 });
 
 const shutdown = async (): Promise<void> => {
   stopPhotoCleanup();
+  stopExpirySweep();
   server.close();
   await pool.end();
   process.exit(0);

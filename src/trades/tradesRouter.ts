@@ -114,8 +114,10 @@ tradesRouter.get('/', async (req: Request, res: Response) => {
   const role = req.query.role as string | undefined; // 'proposer' | 'recipient' | undefined (both)
   const state = req.query.state as string | undefined; // 'proposed' | 'accepted' | 'completed' | etc.
 
-  // Lazy expiry: expire stale trades before listing
-  await expireStaleTrades();
+  // Lazy expiry: expire stale trades before listing (do NOT await - fire and forget)
+  expireStaleTrades().catch(err => {
+    console.error('[trades] Lazy expiry failed:', err);
+  });
 
   try {
     let sql = `
