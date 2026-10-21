@@ -1,2 +1,5 @@
+# Environment files (contain secrets, never commit)
+.env
+
 # Candidate phrase files (contain mined phrases, not committed)
 scripts/data/chat_curated_candidates*.txt
