@@ -10,8 +10,9 @@ import photosRouter from './marketplace/photosRouter';
 import offersRouter from './marketplace/offersRouter';
 import { startPhotoCleanup, stopPhotoCleanup } from './marketplace/photoCleanup';
 import { config } from './config';
-import { pool } from './db';
+import { pool, query } from './db';
 import { classifyDbError } from './db/errors';
+import { verifyRequiredSettings } from './settings/settingsRegistry';
 
 const app = express();
 
@@ -245,6 +246,15 @@ const server = app.listen(config.port, config.host, async () => {
 
   // Check database after server starts
   await checkDatabaseConnection();
+  
+  // Verify required settings exist
+  try {
+    await verifyRequiredSettings(query);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    console.error('Server startup FAILED - missing required settings');
+    process.exit(1);
+  }
   
   // Start photo cleanup timer
   startPhotoCleanup();

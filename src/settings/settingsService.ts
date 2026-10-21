@@ -100,16 +100,17 @@ async function getCacheTTL(): Promise<number> {
 
 /**
  * Get a numeric setting. Returns the value as a number.
- * Logs error and returns fallback if value is not numeric.
+ * Throws error if value is missing or not numeric (NO fallback).
  */
-export async function getNumberSetting(key: string, fallback: number): Promise<number> {
+export async function getNumberSetting(key: string): Promise<number> {
   const raw = await getSetting(key);
-  if (raw === null) return fallback;
+  if (raw === null) {
+    throw new Error(`Required setting "${key}" not found in app_settings table`);
+  }
 
   const num = Number(raw);
   if (isNaN(num)) {
-    console.error(`[settingsService] Setting "${key}" is not a valid number: ${raw}. Using fallback ${fallback}.`);
-    return fallback;
+    throw new Error(`Setting "${key}" value is not a valid number: ${raw}`);
   }
 
   return num;
@@ -117,32 +118,39 @@ export async function getNumberSetting(key: string, fallback: number): Promise<n
 
 /**
  * Get a string setting.
+ * Throws error if value is missing (NO fallback).
  */
-export async function getStringSetting(key: string, fallback: string): Promise<string> {
+export async function getStringSetting(key: string): Promise<string> {
   const raw = await getSetting(key);
-  if (raw === null) return fallback;
+  if (raw === null) {
+    throw new Error(`Required setting "${key}" not found in app_settings table`);
+  }
   return String(raw);
 }
 
 /**
  * Get a boolean setting.
+ * Throws error if value is missing (NO fallback).
  */
-export async function getBooleanSetting(key: string, fallback: boolean): Promise<boolean> {
+export async function getBooleanSetting(key: string): Promise<boolean> {
   const raw = await getSetting(key);
-  if (raw === null) return fallback;
+  if (raw === null) {
+    throw new Error(`Required setting "${key}" not found in app_settings table`);
+  }
   return Boolean(raw);
 }
 
 /**
  * Get an array setting (JSONB array).
- * Returns fallback if not an array.
+ * Throws error if missing or not an array (NO fallback).
  */
-export async function getArraySetting<T = unknown>(key: string, fallback: T[]): Promise<T[]> {
+export async function getArraySetting<T = unknown>(key: string): Promise<T[]> {
   const raw = await getSetting(key);
-  if (raw === null) return fallback;
+  if (raw === null) {
+    throw new Error(`Required setting "${key}" not found in app_settings table`);
+  }
   if (!Array.isArray(raw)) {
-    console.error(`[settingsService] Setting "${key}" is not an array. Using fallback.`);
-    return fallback;
+    throw new Error(`Setting "${key}" is not an array`);
   }
   return raw as T[];
 }

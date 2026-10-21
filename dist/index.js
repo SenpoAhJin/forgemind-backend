@@ -50,6 +50,7 @@ const photoCleanup_1 = require("./marketplace/photoCleanup");
 const config_1 = require("./config");
 const db_1 = require("./db");
 const errors_1 = require("./db/errors");
+const settingsRegistry_1 = require("./settings/settingsRegistry");
 const app = (0, express_1.default)();
 /**
  * Ports an Expo dev server may be reached on. A browser origin is only accepted
@@ -181,6 +182,12 @@ app.use('/marketplace/chat', chatRouter_1.default);
 const matcherRouter_1 = __importDefault(require("./ai/matcherRouter"));
 app.use('/api/ai', matcherRouter_1.default);
 /**
+ * Trades: user-to-user item trades (swap, sale).
+ * M1 Trade Backend - server-side item ownership and state machine.
+ */
+const tradesRouter_1 = __importDefault(require("./trades/tradesRouter"));
+app.use('/trades', tradesRouter_1.default);
+/**
  * Marketplace Registration: cosplayer submits, reads back own registration.
  * See src/marketplace/router.ts for endpoint details
  */
@@ -262,6 +269,15 @@ const server = app.listen(config_1.config.port, config_1.config.host, async () =
     console.log('  health:       GET /health');
     // Check database after server starts
     await checkDatabaseConnection();
+    // Verify required settings exist
+    try {
+        await (0, settingsRegistry_1.verifyRequiredSettings)(db_1.query);
+    }
+    catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        console.error('Server startup FAILED - missing required settings');
+        process.exit(1);
+    }
     // Start photo cleanup timer
     (0, photoCleanup_1.startPhotoCleanup)();
 });

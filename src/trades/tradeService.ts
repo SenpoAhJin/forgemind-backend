@@ -115,10 +115,10 @@ export class ForbiddenError extends Error {
 export async function proposeTrade(proposal: TradeProposal): Promise<string> {
   return await withTransaction(async (client) => {
     // 1. Load settings
-    const maxItemsPerSide = await getNumberSetting('trade.max_items_per_side', 5);
-    const maxActiveTrades = await getNumberSetting('trade.max_active_trades_per_user', 10);
-    const allowedTypes = await getArraySetting<string>('trade.allowed_types', ['swap', 'sale']);
-    const expiryHours = await getNumberSetting('trade.offer_expiry_hours', 72);
+    const maxItemsPerSide = await getNumberSetting('trade.max_items_per_side');
+    const maxActiveTrades = await getNumberSetting('trade.max_active_trades_per_user');
+    const allowedTypes = await getArraySetting<string>('trade.allowed_types');
+    const expiryHours = await getNumberSetting('trade.offer_expiry_hours');
 
     // 2. Validate basic constraints
     if (proposal.proposer_id === proposal.recipient_id) {
@@ -343,7 +343,7 @@ export async function acceptTrade(tradeId: string, actorId: string): Promise<voi
     }
 
     // 7. Update trade state
-    const confirmWindowHours = await getNumberSetting('trade.confirm_window_hours', 48);
+    const confirmWindowHours = await getNumberSetting('trade.confirm_window_hours');
     const newExpiresAt = new Date();
     newExpiresAt.setHours(newExpiresAt.getHours() + confirmWindowHours);
 
