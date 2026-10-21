@@ -365,3 +365,129 @@ TEST 12: Second confirm is no-op
 2. Mock authentication middleware for tests OR
 3. Test trade logic directly at service layer (unit tests) OR
 4. Wait for mobile app test environment (Expo Go with real login)
+
+
+---
+
+## M1d: VERIFY THE TRADE BACKEND
+
+**Date**: 2026-10-21  
+**Goal**: Run real tests (service-level + HTTP), verify trade logic works, fix any failures
+
+### Step 1: Current State Check
+
+**a) Migration history**:
+```
+Applied migrations (22 total):
+  001 through 020: Base migrations
+  021_m1_trade_system: PRESENT ✓
+  022_fix_021_down_order: PRESENT ✓
+```
+
+**Migration 022 status**: File exists, applied to database (id=32). This is the no-op documentation migration that notes the FK fix.
+
+**b) Tables and settings**:
+```
+Trade tables (5):
+  ✓ app_settings
+  ✓ item_ownership_history
+  ✓ trade_events
+  ✓ trade_items
+  ✓ trades
+
+Trade settings (8):
+  ✓ settings.cache_seconds
+  ✓ trade.allowed_types
+  ✓ trade.confirm_window_hours
+  ✓ trade.expiry_sweep_minutes
+  ✓ trade.max_active_trades_per_user
+  ✓ trade.max_items_per_side
+  ✓ trade.offer_expiry_hours
+  ✓ trade.reminder_hours_before_expiry
+```
+
+**c) owned_attire constraint**:
+- Current constraint: `CHECK (availability_status IN ('free', 'committed', 'reserved'))` ✓
+- down() function (lines 226-236): 
+  - Drops FK `fk_owned_attire_reserved_trade` BEFORE dropping `trades` table ✓
+  - Restores original constraint: `CHECK (availability_status IN ('free', 'committed'))` ✓
+- Answer: YES, constraint allows 'reserved'; YES, down() restores original constraint
+
+**d) .env security**:
+- **ISSUE FOUND**: .env WAS committed (contained `DB_PASSWORD=master123456`)
+- **FIXED**: Added .env to .gitignore, removed from git with `git rm --cached .env`
+- Commit: a1c030e
+- .env still exists on disk (local dev works), just no longer tracked
+
+**e) Git status**: Clean after commit a1c030e
+
+---
+
+### Step 2: Authentication Understanding
+
+**Session mechanism** (from `src/auth/session.ts` and `src/auth/router.ts`):
+
+1. **Login flow**: POST `/auth/login` with `{email, password}`
+   - Verifies bcrypt hash, issues 256-bit token via `generateSessionToken()`
+   - Stores SHA-256 hash in `sessions.refresh_token_hash` (NOT the token itself)
+   - Returns `{session_token: <plaintext>, expires_at}` in response body
+
+2. **Request authentication**: `requireSession(req, res)`
+   - Reads `Authorization: Bearer <token>` header (NOT cookies)
+   - Computes `SHA-256(token)` and queries `sessions.refresh_token_hash`
+   - JOINs to `users` table, checks `expires_at > NOW()`
+   - Returns `SessionUser` object or sends 401 response
+
+3. **Token format**: Opaque 256-bit random token (hex string, ~64 chars)
+
+4. **Why M1c tests failed**: 
+   - Test script created session rows with dummy `refresh_token_hash`
+   - But had no way to reverse SHA-256 to get the plaintext token
+   - All HTTP requests got 401 "invalid_session" before trade logic ran
+
+**Solution for testing**: Call real `/auth/login` endpoint to get valid tokens, OR create sessions using `issueSession()` function directly (requires importing compiled code).
+
+---
+
+### Step 3: Service-Level Tests
+
+**Tests run**: 10 automated tests directly against tradeService functions (no HTTP, no auth)
+
+**Fixes applied**:
+1. **DISTINCT with FOR UPDATE bug**: Line 354 had `SELECT DISTINCT ... FOR UPDATE OF t` which PostgreSQL rejects. Fixed by using `GROUP BY t.id` instead, then locking each trade individually.
+
+2. **Expiry state bug**: `expireStaleTrades()` was calling `cancelTradeInternal()` which set state to 'cancelled'. Fixed to set state to 'expired' with proper item release and event logging.
+
+3. **Expires_at check missing**: `acceptTrade()` and `confirmTrade()` didn't check if trade expired. Added `if (trade.expires_at < new Date()) throw InvalidTransitionError` to both functions.
+
+4. **Audit action constraint**: Used 'expire' action but audit_events only allows 'create', 'update', 'delete', 'access', 'export', 'verify'. Changed to 'update' with `action_detail: 'expire'` in details JSONB.
+
+**Test Results**:
+```
+✓ Test 1: Swap happy path: PASS
+✓ Test 2: One party confirms: PASS  
+✓ Test 5: Reserved item cannot reuse: PASS
+✓ Test 6: Max items limit: PASS
+✓ Test 7: Concurrent accepts: PASS
+✓ Test 8: Expired trade releases: PASS
+✓ Test 11: Cascading cancel: PASS
+✓ Test 12: Second confirm no-op: PASS
+✓ Test 13: Expired trade rejected: PASS
+✓ Test 14: Wrong actor rejected: PASS
+
+Summary: 10 PASS, 0 FAIL
+```
+
+**What was verified**:
+- Trade state machine transitions correctly
+- Item ownership transfers on completion
+- Row locking prevents race conditions
+- Reserved items cannot be reused
+- Settings limits enforced (max_items_per_side)
+- Expiry sweep releases reservations
+- Cascading cancel works
+- Idempotent confirm operations
+- Expired trades rejected before transition
+- Authorization checks work (proposer can't accept, non-party can't confirm)
+
+---

@@ -195,6 +195,10 @@ async function acceptTrade(tradeId, actorId) {
         if (trade.state !== 'proposed') {
             throw new InvalidTransitionError(`Cannot accept trade in state "${trade.state}"`);
         }
+        // 4. Verify not expired
+        if (trade.expires_at < new Date()) {
+            throw new InvalidTransitionError('Cannot accept an expired trade');
+        }
         // 4. Lock all items in ID order (to prevent deadlocks)
         const tradeItems = await client.query(`SELECT * FROM trade_items WHERE trade_id = $1 ORDER BY item_id`, [tradeId]);
         const itemIds = tradeItems.rows.map((ti) => ti.item_id);
@@ -235,14 +239,18 @@ async function acceptTrade(tradeId, actorId) {
         WHERE id = $2`, [newExpiresAt, tradeId]);
         // 8. Cancel other proposed trades containing these items
         if (itemIds.length > 0) {
-            const otherTradesResult = await client.query(`SELECT DISTINCT t.id
+            // Find conflicting trade IDs first (without FOR UPDATE)
+            const conflictingIds = await client.query(`SELECT t.id
            FROM trades t
            JOIN trade_items ti ON t.id = ti.trade_id
           WHERE ti.item_id = ANY($1::uuid[])
             AND t.id <> $2
             AND t.state = 'proposed'
-            FOR UPDATE OF t`, [itemIds, tradeId]);
-            for (const row of otherTradesResult.rows) {
+          GROUP BY t.id`, [itemIds, tradeId]);
+            // Lock and cancel each trade individually
+            for (const row of conflictingIds.rows) {
+                // Lock the trade
+                await client.query(`SELECT id FROM trades WHERE id = $1 AND state = 'proposed' FOR UPDATE`, [row.id]);
                 await cancelTradeInternal(client, row.id, null, 'Item no longer available');
             }
         }
@@ -345,6 +353,10 @@ async function confirmTrade(tradeId, actorId) {
         if (trade.state !== 'accepted') {
             throw new InvalidTransitionError('Can only confirm accepted trades');
         }
+        // Check not expired
+        if (trade.expires_at < new Date()) {
+            throw new InvalidTransitionError('Cannot confirm an expired trade');
+        }
         // Determine which party is confirming
         const isProposer = trade.proposer_id === actorId;
         const confirmField = isProposer ? 'proposer_confirmed_at' : 'recipient_confirmed_at';
@@ -407,7 +419,29 @@ async function expireStaleTrades() {
           AND expires_at < NOW()
           FOR UPDATE SKIP LOCKED`);
         for (const trade of trades.rows) {
-            await cancelTradeInternal(client, trade.id, null, 'Trade expired');
+            // Get trade items to release reservations
+            const tradeItems = await client.query(`SELECT item_id FROM trade_items WHERE trade_id = $1`, [trade.id]);
+            const itemIds = tradeItems.rows.map((ti) => ti.item_id);
+            // Release item reservations
+            if (itemIds.length > 0) {
+                await client.query(`UPDATE owned_attire
+              SET availability_status = 'free',
+                  reserved_trade_id = NULL
+            WHERE attire_id = ANY($1::uuid[])
+              AND reserved_trade_id = $2`, [itemIds, trade.id]);
+            }
+            // Update trade to expired
+            await client.query(`UPDATE trades
+            SET state = 'expired',
+                updated_at = NOW()
+          WHERE id = $1`, [trade.id]);
+            // Write events
+            await writeTradeEvent(client, trade.id, null, trade.state, 'expired', 'Trade expired');
+            await writeAuditEvent(client, null, 'trade', trade.id, 'update', {
+                action_detail: 'expire',
+                previous_state: trade.state,
+                items_released: itemIds.length,
+            });
         }
         return trades.rows.length;
     });
