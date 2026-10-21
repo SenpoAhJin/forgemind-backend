@@ -259,7 +259,7 @@ async function test5_reservedItemCannotBeReused() {
     await tradeService.acceptTrade(tradeAId, recipient.user_id);
     console.log(`  ✓ Trade A accepted, propItem reserved`);
 
-    // Try to create Trade B with same propItem
+    // Try to create Trade B with same propItem (should throw InvalidTransitionError or ValidationError)
     try {
       await tradeService.proposeTrade({
         proposer_id: proposer.user_id,
@@ -270,11 +270,12 @@ async function test5_reservedItemCannotBeReused() {
       });
       throw new Error('Should have rejected reserved item');
     } catch (err) {
-      if (err.message.includes('not available') || err.message.includes('reserved')) {
-        console.log(`  ✓ Reserved item rejected: ${err.message}`);
+      if ((err.name === 'InvalidTransitionError' || err.name === 'ValidationError') &&
+          (err.message.includes('not available') || err.message.includes('reserved') || err.message.includes('no longer available'))) {
+        console.log(`  ✓ Reserved item rejected with ${err.name}: ${err.message}`);
         return 'PASS';
       }
-      throw err;
+      throw new Error(`Expected InvalidTransitionError/ValidationError about availability, got ${err.name}: ${err.message}`);
     }
   } catch (err) {
     console.error(`  ✗ FAILED: ${err.message}`);
@@ -293,6 +294,7 @@ async function test6_maxItemsLimit() {
     const allProposerItems = testItems.filter(i => i.user_id === proposer.user_id && i.notes.includes('item'));
     const sixItems = allProposerItems.slice(0, 6); // Try to offer 6 items
 
+    // Try to offer 6 items (should throw ValidationError)
     try {
       await tradeService.proposeTrade({
         proposer_id: proposer.user_id,
@@ -303,11 +305,12 @@ async function test6_maxItemsLimit() {
       });
       throw new Error('Should have rejected 6 items');
     } catch (err) {
-      if (err.message.includes('more than') || err.message.includes('Cannot offer')) {
-        console.log(`  ✓ Limit enforced: ${err.message}`);
+      if (err.name === 'ValidationError' &&
+          (err.message.includes('more than') || err.message.includes('Cannot offer'))) {
+        console.log(`  ✓ Limit enforced with ValidationError: ${err.message}`);
         return 'PASS';
       }
-      throw err;
+      throw new Error(`Expected ValidationError about item limit, got ${err.name}: ${err.message}`);
     }
   } catch (err) {
     console.error(`  ✗ FAILED: ${err.message}`);
@@ -569,16 +572,17 @@ async function test13_expiredTradeRejected() {
     // Expire immediately
     await query(`UPDATE trades SET expires_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, [tradeId]);
 
-    // Try to accept
+    // Try to accept (should throw InvalidTransitionError)
     try {
       await tradeService.acceptTrade(tradeId, recipient.user_id);
       throw new Error('Should have rejected expired trade');
     } catch (err) {
-      if (err.message.includes('expired') || err.message.includes('transition')) {
-        console.log(`  ✓ Accept rejected: ${err.message}`);
+      if (err.name === 'InvalidTransitionError' &&
+          (err.message.includes('expired') || err.message.includes('transition'))) {
+        console.log(`  ✓ Accept rejected with InvalidTransitionError: ${err.message}`);
         return 'PASS';
       }
-      throw err;
+      throw new Error(`Expected InvalidTransitionError about expiry, got ${err.name}: ${err.message}`);
     }
   } catch (err) {
     console.error(`  ✗ FAILED: ${err.message}`);
@@ -620,35 +624,59 @@ async function test14_wrongActorRejected() {
     });
     createdTrades.push(tradeId);
 
-    // Proposer tries to accept (should fail)
+    // Proposer tries to accept (should throw ForbiddenError)
+    let proposerRejected = false;
     try {
       await tradeService.acceptTrade(tradeId, proposer.user_id);
       throw new Error('Proposer should not be able to accept');
     } catch (err) {
-      if (err.message.includes('recipient') || err.message.includes('forbidden')) {
-        console.log(`  ✓ Proposer accept blocked: ${err.message}`);
+      if (err.name === 'ForbiddenError' && err.message.includes('recipient')) {
+        proposerRejected = true;
+        console.log(`  ✓ Proposer accept blocked with ForbiddenError: ${err.message}`);
       } else {
-        throw err;
+        throw new Error(`Expected ForbiddenError with "recipient", got ${err.name}: ${err.message}`);
       }
     }
 
-    // Accept by recipient
+    if (!proposerRejected) {
+      throw new Error('Proposer was not properly rejected');
+    }
+
+    // Verify trade state unchanged (still proposed)
+    const tradeAfterBadAccept = await query(`SELECT state FROM trades WHERE id = $1`, [tradeId]);
+    if (tradeAfterBadAccept[0].state !== 'proposed') {
+      throw new Error(`Trade state changed to ${tradeAfterBadAccept[0].state} after bad accept`);
+    }
+
+    // Accept by recipient (valid)
     await tradeService.acceptTrade(tradeId, recipient.user_id);
-      // Third party tries to confirm (should fail)
-      let thirdPartyBlocked = false;
-      try {
-        await tradeService.confirmTrade(tradeId, thirdParty.user_id);
-      } catch (err) {
-        // Any error here means third party was blocked
-        thirdPartyBlocked = true;
-        console.log('  ? Non-party confirm blocked:', err.message || String(err));
+    console.log(`  ✓ Recipient accepted (valid action)`);
+
+    // Third party tries to confirm (should throw ForbiddenError)
+    let thirdPartyRejected = false;
+    try {
+      await tradeService.confirmTrade(tradeId, thirdParty.user_id);
+      throw new Error('Third party should not be able to confirm');
+    } catch (err) {
+      if (err.name === 'ForbiddenError' && err.message.includes('parties')) {
+        thirdPartyRejected = true;
+        console.log(`  ✓ Non-party confirm blocked with ForbiddenError: ${err.message}`);
+      } else {
+        throw new Error(`Expected ForbiddenError with "parties", got ${err.name}: ${err.message}`);
       }
-      
-      if (!thirdPartyBlocked) {
-        throw new Error('Third party was able to confirm (should have been blocked)');
-      }
-      
-      return 'PASS';
+    }
+
+    if (!thirdPartyRejected) {
+      throw new Error('Third party was not properly rejected');
+    }
+
+    // Verify trade state unchanged (still accepted)
+    const tradeAfterBadConfirm = await query(`SELECT state FROM trades WHERE id = $1`, [tradeId]);
+    if (tradeAfterBadConfirm[0].state !== 'accepted') {
+      throw new Error(`Trade state changed to ${tradeAfterBadConfirm[0].state} after bad confirm`);
+    }
+
+    return 'PASS';
   } catch (err) {
     console.error(`  ✗ FAILED: ${err.message}`);
     return 'FAIL';
