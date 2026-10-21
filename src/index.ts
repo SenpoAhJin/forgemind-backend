@@ -151,6 +151,13 @@ import matcherRouter from './ai/matcherRouter';
 app.use('/api/ai', matcherRouter);
 
 /**
+ * Trades: user-to-user item trades (swap, sale).
+ * M1 Trade Backend - server-side item ownership and state machine.
+ */
+import tradesRouter from './trades/tradesRouter';
+app.use('/trades', tradesRouter);
+
+/**
  * Marketplace Registration: cosplayer submits, reads back own registration.
  * See src/marketplace/router.ts for endpoint details
  */
