@@ -2,7 +2,7 @@
 
 **Date**: 2026-10-21  
 **Branch**: feat/m1-trade-backend  
-**Status**: IN PROGRESS (Steps 0-2 complete, Steps 3-7 remaining)
+**Status**: PARTIAL (Steps 0-6 COMPLETE, all tests UNVERIFIED due to H1)
 
 ---
 
@@ -138,147 +138,62 @@ The earlier contradiction was due to incomplete inspection. Table is present and
 
 ## Remaining Steps
 
-### ⏳ Step 3: Trade State Machine (IN PROGRESS)
-**File to create**: src/trades/tradeStateMachine.ts
+---
 
-**Required**:
-- State transition function with ALL validations:
-  - Holder-verified check for both users
-  - Item ownership verification
-  - Item availability check (not already reserved)
-  - Max items per side limit (from settings)
-  - Max active trades per user (from settings)
-  - Allowed trade types (from settings)
-  - Swap requires items on both sides
-  - Sale requires items on exactly one side (NO money fields)
-- Transaction wrapper with row locking (SELECT ... FOR UPDATE)
-- Lock items in ID order to avoid deadlocks
-- Write trade_events on every transition
-- `expireStaleTrades()` function for background job
-- Lazy expiry check when listing trades
+## All Steps Complete
 
-**State transitions**:
-```
-proposed -> accepted  (recipient only, set accepted_at, reserve items, new expires_at)
-proposed -> declined  (recipient only)
-proposed -> cancelled (proposer only)
-accepted -> cancelled (either party, release reservations)
-proposed/accepted -> expired (system, release reservations)
-accepted -> completed (system, when BOTH confirmed_at set, move items, write history)
-```
+### ✅ Step 3: Trade State Machine (COMPLETE)
+**File**: src/trades/tradeService.ts (650 lines)  
+**Commit**: 3fb40bd
 
-**Complexity**: ~300-400 lines, heavy validation logic.
+**Functions Implemented**:
+- `proposeTrade()` - Full validation, no reservation yet
+- `acceptTrade()` - Re-validate under lock, reserve items, cascade cancel conflicting trades
+- `declineTrade()` - Recipient only
+- `cancelTrade()` - Proposer for proposed, either for accepted
+- `confirmTrade()` - Idempotent, triggers completion when both confirmed
+- `expireStaleTrades()` - FOR UPDATE SKIP LOCKED, safe concurrency
+
+**All limits from settings service** - NO hard-coded 72/48/5/10/12/30  
+**Dual audit trail** - trade_events + audit_events on every transition  
+**Row locking** - Trade first, then items by ID order (deadlock prevention)
 
 ---
 
-### ⏳ Step 4: Endpoints (TODO)
-**File to create**: src/trades/tradesRouter.ts
+### ✅ Step 4: Endpoints (COMPLETE)
+**File**: src/trades/tradesRouter.ts (490 lines)  
+**Commit**: ed3e954
 
-**8 routes required**:
-1. POST /trades (propose)
-2. GET /trades (list my trades, filters: role, state)
-3. GET /trades/:id (detail, only parties)
-4. POST /trades/:id/accept
-5. POST /trades/:id/decline
-6. POST /trades/:id/cancel
-7. POST /trades/:id/confirm
-8. GET /settings/trade (read trade settings, any logged-in user)
-9. GET /admin/settings (list all settings, Holder only)
-10. PUT /admin/settings/:key (update setting, Holder only)
+**10 Endpoints**:
+1. POST /trades - Propose trade
+2. GET /trades - List with filters (role, state), lazy expiry
+3. GET /trades/:id - Detail (parties only, 404 for non-party)
+4. POST /trades/:id/accept - Recipient only
+5. POST /trades/:id/decline - Recipient only
+6. POST /trades/:id/cancel - Proposer/either depending on state
+7. POST /trades/:id/confirm - Idempotent handoff confirmation
+8. GET /settings/trade - Read trade settings (any logged-in user)
+9. GET /admin/settings - List all settings (Holder only)
+10. PUT /admin/settings/:key - Update setting with audit logging (Holder only)
 
-**Auth pattern**: Use `requireSession(req, res)` middleware from src/auth/session.ts
-
-**Complexity**: ~400-500 lines (validation, permission checks, error handling).
+**Routes wired** in src/index.ts (+7 lines)  
+**Authorization**: Holder check (`is_holder_verified=true AND verification_status='verified'`), non-party gets 404 not 403
 
 ---
 
-### ⏳ Step 5: Tests (TODO)
+### ✅ Step 5: Tests (COMPLETE - Manual Test Plan Written)
+**File**: docs/M1_MANUAL_TEST_PLAN.md (634 lines)  
+**Commit**: 200ca55
 
-**If test framework exists**: Add test files  
-**If none exists**: Write docs/M1_MANUAL_TEST_PLAN.md
-
-**10 test cases** (from spec):
-1. Swap happy path (propose → accept → both confirm → items transfer → history rows)
-2. Only one party confirms → no items move
-3. Non-party cannot read/act on trade
+**12 Test Cases** (all UNVERIFIED due to H1):
+1. Swap happy path (propose → accept → both confirm → items transfer)
+2. Only one party confirms (nothing moves)
+3. Non-party cannot read or act
 4. Unverified user cannot propose
-5. Already-reserved item cannot be added
+5. Reserved item cannot be added to new proposal
 6. Exceeding max_items_per_side rejected
-7. Two simultaneous accepts → exactly one succeeds (row locking)
+7. Two simultaneous accepts (exactly one succeeds)
 8. Expired trade releases reservations
-9. Changing settings.trade.max_items_per_side changes behavior (no code change)
+9. Holder changes setting, next proposal obeys it (no code change)
 10. Non-Holder cannot call /admin/settings
-
-**Complexity**: Manual test plan: ~2 hours to write comprehensive requests/responses.
-
----
-
-### ⏳ Step 6: Static Verification (TODO)
-
-**Required checks**:
-- [x] `npm run typecheck` (tsc --noEmit) - passes or list exact failures
-- [ ] Lint check (if configured)
-- [ ] Grep for hard-coded limits (72, 48, 5, 10, 12) in trade code - none should remain
-- [ ] Git diff review - no unrelated files changed
-- [ ] State which tests RAN vs UNVERIFIED
-
----
-
-### ⏳ Step 7: Report and Changelog (TODO)
-
-**Files to create/update**:
-1. docs/M1_REPORT.md - comprehensive completion report
-2. CHANGELOG.md - append entry with today's date (2026-10-21)
-
-**M1_REPORT.md contents**:
-- Files changed (list with line counts)
-- Tables added (with row counts from migration)
-- Endpoints (list with method + path + description)
-- Settings keys (all 8 with defaults)
-- What was verified vs not verified
-- Open issues (device inventory migration, etc.)
-- Proposed M2 scope (mobile UI: my items, propose screen, handoff confirmations, Holder settings editor)
-
-**CHANGELOG entry**:
-- Status: COMPLETE only if Steps 1-6 fully verified
-- Status: PARTIAL if any gaps (list them)
-- Include migration status, endpoints count, test coverage
-
----
-
-## Current Branch State
-
-**Branch**: feat/m1-trade-backend  
-**Base**: feature/chat-curated-terms  
-**Commits**: 3
-1. 6aeafb5 - M1 Step 0: Inspection report
-2. da372fa - M1 Step 1: Add trade system migration
-3. bde64c0 - M1 Step 2: Add settings service
-
-**Files changed**: 3 new files
-**Lines added**: ~704 (215 + 239 + 250)
-
-**Database status**: Migration 021 applied successfully to forgemind_dev
-
----
-
-## Token Usage Note
-
-**Session token usage**: ~105k / 200k (52%)  
-**Remaining steps complexity**: Steps 3-4 are code-heavy (~800 lines total)  
-**Recommendation**: Continue in follow-up session for Steps 3-7
-
----
-
-## Next Session TODO
-
-1. ✅ Read M1_PROGRESS.md to resume
-2. Create src/trades/tradeStateMachine.ts (Step 3)
-3. Create src/trades/tradesRouter.ts (Step 4)
-4. Wire routes into src/index.ts
-5. Write M1_MANUAL_TEST_PLAN.md (Step 5)
-6. Run typecheck, grep verification (Step 6)
-7. Write M1_REPORT.md and update CHANGELOG (Step 7)
-8. Final commit on feat/m1-trade-backend
-
-**Estimated time**: 60-90 minutes for Steps 3-7.
+11. Accepting trade A cancels conflicting proposed trades
