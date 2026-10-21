@@ -491,3 +491,65 @@ Summary: 10 PASS, 0 FAIL
 - Authorization checks work (proposer can't accept, non-party can't confirm)
 
 ---
+
+### Step 4: HTTP Tests
+
+**Status**: NOT RUN - authentication blocker
+
+As documented in Step 2, HTTP tests require valid session tokens from real `/auth/login` endpoint. Service-level tests (Step 3) verified trade logic directly, bypassing HTTP/auth layers.
+
+**Cases verified via service tests**: 1, 2, 5, 6, 7, 8, 11, 12, 13, 14
+**Cases still unverified**: 3 (non-party 404), 4 (unverified user), 9 (Holder settings), 10 (non-Holder block)
+
+**Recommendation**: HTTP testing should be done via mobile app integration (real user login flow) or by writing unit tests that mock requireSession middleware.
+
+---
+
+### Step 5: Cleanup Check
+
+**Test prefix**: M1DSVC_ (service tests), M1TEST_ (earlier HTTP tests)
+
+**Query results**:
+```
+Test data remaining:
+  Users: 0
+  Items: 0
+  Trades: 0
+  Sessions: 0
+
+✓ All test data cleaned up
+```
+
+**Cleanup scripts work correctly** - test users, items, trades, and sessions are fully removed after test runs.
+
+---
+
+### Step 6: Build Sync
+
+dist/ is tracked in this repo (pre-existing convention). Running build to sync latest changes:
+
+
+```
+Build successful, 0 dist/ files changed (already committed in Step 3)
+```
+
+---
+
+### Step 7: Final Report
+
+Updated docs/M1_REPORT.md with:
+- Test results table (10 PASS, 0 FAIL, 4 NOT RUN)
+- Bugs fixed during M1d (4 critical issues)
+- Risk assessment: MEDIUM (device sync missing)
+- Removed all instances of "production-ready", "MERGE-READY", "Risk Level: LOW"
+- Honest accounting: 10/14 cases verified, device inventory sync is BLOCKER
+
+**M1d Status**: COMPLETE
+- Step 1: Current state checked ✓
+- Step 2: Authentication understood ✓  
+- Step 3: Service tests - 10/10 PASS ✓
+- Step 4: HTTP tests - NOT RUN (auth blocker)
+- Step 5: Cleanup verified (0 rows) ✓
+- Step 6: Build synced ✓
+- Step 7: Report updated ✓
+
