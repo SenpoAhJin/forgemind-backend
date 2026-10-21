@@ -73,6 +73,11 @@ exports.config = {
      * which is the correct default for native-only clients.
      */
     corsOrigins: parseOrigins(process.env.CORS_ORIGINS),
+    /**
+     * Flask AI service URL for attire matching.
+     * Defaults to localhost:5000 for development.
+     */
+    flaskAiUrl: process.env.FLASK_AI_URL ?? 'http://localhost:5000',
 };
 /**
  * Assembled at runtime for tooling that wants a single URL. Never logged.

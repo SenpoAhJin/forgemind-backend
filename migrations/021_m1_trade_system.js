@@ -219,12 +219,16 @@ exports.down = (pgm) => {
     -- Drop in reverse order to avoid FK violations
     DROP TABLE IF EXISTS trade_events;
     DROP TABLE IF EXISTS trade_items;
+    
+    -- Drop FK constraint BEFORE dropping the trades table it references
+    ALTER TABLE owned_attire
+      DROP CONSTRAINT IF EXISTS fk_owned_attire_reserved_trade;
+    
     DROP TABLE IF EXISTS trades;
     DROP TABLE IF EXISTS item_ownership_history;
 
     -- Revert owned_attire changes
     ALTER TABLE owned_attire
-      DROP CONSTRAINT IF EXISTS fk_owned_attire_reserved_trade,
       DROP CONSTRAINT IF EXISTS owned_attire_availability_status_check,
       DROP COLUMN IF EXISTS reserved_trade_id,
       DROP COLUMN IF EXISTS slot;

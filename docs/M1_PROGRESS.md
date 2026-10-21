@@ -2,7 +2,41 @@
 
 **Date**: 2026-10-21  
 **Branch**: feat/m1-trade-backend  
-**Status**: PARTIAL (Steps 0-6 COMPLETE, all tests UNVERIFIED due to H1)
+**Status**: IN PROGRESS (M1c - Fix, Wire, and Verify)
+
+---
+
+## M1c Step 1: H1 Blocker Status
+
+**Date**: 2026-10-21
+
+### H1 Resolution Status: ✅ RESOLVED
+
+**What was blocked in M1/M1b**:
+- Database queries from Node.js scripts (e.g., `node -e "require('pg')..."`)
+- All runtime testing was UNVERIFIED
+
+**What works NOW (M1c)**:
+```bash
+$ cd forgemind-backend
+$ npm start
+# Server starts successfully on port 3000
+
+$ curl http://localhost:3000/health
+# Response: {"status":"ok","db":"ok"}
+```
+
+**Evidence**:
+- Server starts with `database: OK` message
+- Health endpoint returns 200 with `"db":"ok"`
+- No password errors in startup logs
+- Chat filter loads (25 base terms)
+
+**Conclusion**: H1 (database password issue) has been RESOLVED externally. The forgemind_dev database is now accessible through the env config. All runtime testing can proceed.
+
+---
+
+**Previous Status**: PARTIAL (Steps 0-6 COMPLETE, all tests UNVERIFIED due to H1)
 
 ---
 
