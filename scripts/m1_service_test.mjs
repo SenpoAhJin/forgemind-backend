@@ -67,10 +67,10 @@ async function setup() {
 
   for (const u of users) {
     const userRows = await query(
-      `INSERT INTO users (email, password_hash, display_name, base_body_selection, is_holder_verified, verification_status, is_cosplayer)
-       VALUES ($1, $2, $3, 'male', $4, $5, true)
+      `INSERT INTO users (email, password_hash, display_name, base_body_selection, is_holder_verified, verification_status, marketplace_role, is_cosplayer)
+       VALUES ($1, $2, $3, 'male', $4, $5, $6, true)
        RETURNING user_id`,
-      [u.email, dummyPasswordHash, u.name, u.holder, u.verified ? 'verified' : 'not_submitted']
+      [u.email, dummyPasswordHash, u.name, u.holder, u.verified ? 'verified' : 'not_submitted', u.verified ? 'buyer' : null]
     );
     const user_id = userRows[0].user_id;
 
