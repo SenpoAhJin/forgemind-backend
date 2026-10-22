@@ -153,6 +153,13 @@ import matcherRouter from './ai/matcherRouter';
 app.use('/api/ai', matcherRouter);
 
 /**
+ * Inventory: user-owned attire items (owned_attire table).
+ * GET /inventory/mine and POST /inventory.
+ */
+import { inventoryRouter } from './inventory/inventoryRouter';
+app.use('/inventory', inventoryRouter);
+
+/**
  * Trades: user-to-user item trades (swap, sale).
  * M1 Trade Backend - server-side item ownership and state machine.
  */

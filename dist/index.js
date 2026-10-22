@@ -183,6 +183,12 @@ app.use('/marketplace/chat', chatRouter_1.default);
 const matcherRouter_1 = __importDefault(require("./ai/matcherRouter"));
 app.use('/api/ai', matcherRouter_1.default);
 /**
+ * Inventory: user-owned attire items (owned_attire table).
+ * GET /inventory/mine and POST /inventory.
+ */
+const inventoryRouter_1 = require("./inventory/inventoryRouter");
+app.use('/inventory', inventoryRouter_1.inventoryRouter);
+/**
  * Trades: user-to-user item trades (swap, sale).
  * M1 Trade Backend - server-side item ownership and state machine.
  */
