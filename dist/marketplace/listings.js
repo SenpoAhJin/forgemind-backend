@@ -311,6 +311,27 @@ function parseListingInput(body, context) {
         return { ok: false, message: 'One or more fields are invalid', fields };
     }
     const postType = postTypeRaw;
+    // item_id: required for sell/trade, must be NULL for commission
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const rawItemId = body.item_id;
+    let parsedItemId = null;
+    if (postType === 'sell' || postType === 'trade') {
+        if (rawItemId === undefined || rawItemId === null || rawItemId === '') {
+            fields.item_id = 'item_id is required for sell and trade listings';
+        }
+        else if (typeof rawItemId !== 'string' || !UUID_RE.test(rawItemId)) {
+            fields.item_id = 'item_id must be a valid UUID';
+        }
+        else {
+            parsedItemId = rawItemId;
+        }
+    }
+    else if (postType === 'commission') {
+        if (rawItemId !== undefined && rawItemId !== null && rawItemId !== '') {
+            fields.item_id = 'item_id must be omitted for commission listings';
+        }
+        parsedItemId = null;
+    }
     const conditionRaw = typeof body.condition === 'string' ? body.condition.trim() : '';
     let condition = exports.CONDITIONS.includes(conditionRaw)
         ? conditionRaw
@@ -416,6 +437,7 @@ function parseListingInput(body, context) {
             handoff_method: handoff,
             open_to_trade: body.open_to_trade === true,
             condition: condition,
+            item_id: parsedItemId,
             photo_ids: photos.value,
         },
     };

@@ -73,6 +73,7 @@ exports.CREATE_REJECTED_MESSAGE = exports.listingsRouter = void 0;
 const express_1 = require("express");
 const db_1 = require("../db");
 const errors_1 = require("../db/errors");
+const inventoryService_1 = require("../inventory/inventoryService");
 const rules_1 = require("./rules");
 const listings_1 = require("./listings");
 const screener_1 = require("./screener");
@@ -519,6 +520,19 @@ exports.listingsRouter.post('/listings', asyncHandler(async (req, res) => {
             });
             return;
         }
+        // Item ownership check: sell and trade listings must reference an owned_attire item
+        // that belongs to the caller and is currently 'free'. Commission listings must not.
+        if ((input.post_type === 'sell' || input.post_type === 'trade') && input.item_id) {
+            const owned = await (0, inventoryService_1.isItemOwnedAndFree)(input.item_id, caller.user_id);
+            if (!owned) {
+                res.status(400).json({
+                    error: 'validation_error',
+                    message: 'item_id must reference an item you own with availability_status free',
+                    fields: { item_id: 'Must be a free item in your inventory' },
+                });
+                return;
+            }
+        }
         // Quality gate: check if the text appears to be real words before moderation.
         // Gibberish listings (keyboard mash, repeated characters) fail here and are
         // never stored or moderated.
@@ -619,6 +633,7 @@ exports.listingsRouter.post('/listings', asyncHandler(async (req, res) => {
            post_type, budget, rate, rental_fee, rental_period_days, deposit_note,
            trade_offered_item, trade_wanted_item, trade_estimated_value,
            request_deadline, handoff_method, open_to_trade, screener_version,
+           item_id,
            published_at, created_at, updated_at
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,
@@ -626,6 +641,7 @@ exports.listingsRouter.post('/listings', asyncHandler(async (req, res) => {
            $10,$11,$12,$13,$14,$15,
            $16,$17,$18,
            $19,$20,$21,$22,
+           $24,
            $23::timestamptz,
            NOW(), NOW()
          )
@@ -653,6 +669,7 @@ exports.listingsRouter.post('/listings', asyncHandler(async (req, res) => {
             input.open_to_trade,
             verdict.screener_version,
             new Date(),
+            input.item_id ?? null,
         ]);
         // Attach photos in the given order
         if (photoIds.length > 0) {

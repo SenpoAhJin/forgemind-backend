@@ -38,6 +38,7 @@
 import { Request, Response, Router, NextFunction } from 'express';
 import { query } from '../db';
 import { classifyDbError, generateRequestId } from '../db/errors';
+import { isItemOwnedAndFree } from '../inventory/inventoryService';
 import {
   categoryAllowsPostType,
   isHeadOrganizer,
@@ -577,6 +578,20 @@ listingsRouter.post(
         return;
       }
 
+      // Item ownership check: sell and trade listings must reference an owned_attire item
+      // that belongs to the caller and is currently 'free'. Commission listings must not.
+      if ((input.post_type === 'sell' || input.post_type === 'trade') && input.item_id) {
+        const owned = await isItemOwnedAndFree(input.item_id, caller.user_id);
+        if (!owned) {
+          res.status(400).json({
+            error: 'validation_error',
+            message: 'item_id must reference an item you own with availability_status free',
+            fields: { item_id: 'Must be a free item in your inventory' },
+          });
+          return;
+        }
+      }
+
       // Quality gate: check if the text appears to be real words before moderation.
       // Gibberish listings (keyboard mash, repeated characters) fail here and are
       // never stored or moderated.
@@ -701,6 +716,7 @@ listingsRouter.post(
            post_type, budget, rate, rental_fee, rental_period_days, deposit_note,
            trade_offered_item, trade_wanted_item, trade_estimated_value,
            request_deadline, handoff_method, open_to_trade, screener_version,
+           item_id,
            published_at, created_at, updated_at
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,
@@ -708,6 +724,7 @@ listingsRouter.post(
            $10,$11,$12,$13,$14,$15,
            $16,$17,$18,
            $19,$20,$21,$22,
+           $24,
            $23::timestamptz,
            NOW(), NOW()
          )
@@ -736,6 +753,7 @@ listingsRouter.post(
           input.open_to_trade,
           verdict.screener_version,
           new Date(),
+          input.item_id ?? null,
         ],
       );
 
