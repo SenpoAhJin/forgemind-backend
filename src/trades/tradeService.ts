@@ -69,6 +69,7 @@ interface UserVerification {
   user_id: string;
   is_holder_verified: boolean;
   verification_status: string;
+  marketplace_role: string | null;
 }
 
 // ============================================================================
@@ -150,9 +151,9 @@ export async function proposeTrade(proposal: TradeProposal): Promise<string> {
       }
     }
 
-    // 3. Check both users are Holder-verified
+    // 3. Check both users are marketplace-verified
     const users = await client.query<UserVerification>(
-      `SELECT user_id, is_holder_verified, verification_status
+      `SELECT user_id, is_holder_verified, verification_status, marketplace_role
          FROM users
         WHERE user_id = ANY($1::uuid[])`,
       [[proposal.proposer_id, proposal.recipient_id]],
@@ -163,8 +164,8 @@ export async function proposeTrade(proposal: TradeProposal): Promise<string> {
     }
 
     for (const user of users.rows) {
-      if (!user.is_holder_verified || user.verification_status !== 'verified') {
-        throw new ValidationError('Both users must be Holder-verified');
+      if (user.verification_status !== 'verified' || !user.marketplace_role) {
+        throw new ValidationError('Both users must be verified marketplace participants');
       }
     }
 

@@ -93,16 +93,16 @@ async function proposeTrade(proposal) {
                 throw new ValidationError('Sale trade requires items on exactly one side');
             }
         }
-        // 3. Check both users are Holder-verified
-        const users = await client.query(`SELECT user_id, is_holder_verified, verification_status
+        // 3. Check both users are marketplace-verified
+        const users = await client.query(`SELECT user_id, is_holder_verified, verification_status, marketplace_role
          FROM users
         WHERE user_id = ANY($1::uuid[])`, [[proposal.proposer_id, proposal.recipient_id]]);
         if (users.rows.length !== 2) {
             throw new ValidationError('One or both users do not exist');
         }
         for (const user of users.rows) {
-            if (!user.is_holder_verified || user.verification_status !== 'verified') {
-                throw new ValidationError('Both users must be Holder-verified');
+            if (user.verification_status !== 'verified' || !user.marketplace_role) {
+                throw new ValidationError('Both users must be verified marketplace participants');
             }
         }
         // 4. Check proposer active trade count
