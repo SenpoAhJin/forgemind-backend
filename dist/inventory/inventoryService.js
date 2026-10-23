@@ -150,7 +150,11 @@ async function createInventoryItem(userId, input) {
 async function updateInventoryItem(itemId, userId, input) {
     return await (0, db_1.withTransaction)(async (client) => {
         // Lock row and check ownership + version
-        const rows = await client.query(`SELECT * FROM owned_attire WHERE attire_id = $1 FOR UPDATE`, [itemId]);
+        const rows = await client.query(`SELECT oa.*, 
+              (SELECT COUNT(*) FROM listings 
+               WHERE item_id = oa.attire_id AND listing_status = 'active') as active_listing_count
+       FROM owned_attire oa 
+       WHERE oa.attire_id = $1 FOR UPDATE`, [itemId]);
         if (rows.rows.length === 0) {
             throw new InventoryNotFoundError(itemId);
         }
@@ -160,6 +164,23 @@ async function updateInventoryItem(itemId, userId, input) {
         }
         if (current.version !== input.version) {
             throw new VersionConflictError(itemId, input.version, current.version);
+        }
+        // Validate availability_status transitions
+        if (input.availability_status !== undefined) {
+            if (input.availability_status !== 'free' && input.availability_status !== 'committed') {
+                throw new Error('availability_status must be "free" or "committed"');
+            }
+            // Setting to 'committed' is refused if item has reserved_trade_id or active listing
+            if (input.availability_status === 'committed') {
+                if (current.reserved_trade_id) {
+                    throw new Error('Cannot commit item: reserved for trade');
+                }
+                if (current.active_listing_count > 0) {
+                    throw new Error('Cannot commit item: has active listing');
+                }
+            }
+            // Releasing (free) clears original_project_ref and committed_to_project_id
+            // (handled directly in SQL update below)
         }
         // Build update
         const updates = [];
@@ -206,6 +227,15 @@ async function updateInventoryItem(itemId, userId, input) {
             updates.push(`notes = $${paramIndex++}`);
             values.push(input.notes);
         }
+        if (input.availability_status !== undefined) {
+            updates.push(`availability_status = $${paramIndex++}`);
+            values.push(input.availability_status);
+            // Clear committed_to_project_id and original_project_ref when releasing to 'free'
+            if (input.availability_status === 'free') {
+                updates.push(`committed_to_project_id = NULL`);
+                updates.push(`original_project_ref = NULL`);
+            }
+        }
         if (input.original_project_ref !== undefined) {
             updates.push(`original_project_ref = $${paramIndex++}`);
             values.push(input.original_project_ref);
@@ -241,7 +271,7 @@ async function deleteInventoryItem(itemId, userId) {
         }
         // Check not on active listing
         const listings = await client.query(`SELECT listing_id FROM listings 
-       WHERE inventory_item_id = $1 AND listing_status = 'active'`, [itemId]);
+       WHERE item_id = $1 AND listing_status = 'active'`, [itemId]);
         if (listings.rows.length > 0) {
             throw new Error('Cannot delete item that is actively listed');
         }

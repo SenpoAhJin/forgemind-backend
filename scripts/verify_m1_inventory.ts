@@ -284,6 +284,423 @@ async function testImportDuplicates() {
   pass('Import: Cleanup', 'Test items deleted');
 }
 
+async function testVersionLocking() {
+  console.log('\n=== TEST 3: Version Locking ===');
+  
+  const tokenA = await login(USER_A.email, USER_A.password);
+  if (!tokenA) {
+    fail('Version', 'Failed to log in user A');
+    return;
+  }
+
+  // Create item
+  const createRes = await fetch(`${BASE_URL}/inventory`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      entry_method: 'text',
+      auto_categorized_type: 'prop',
+      flexibility_tag: 'as-is-only',
+      condition_rating: 4,
+    }),
+  });
+
+  if (!createRes.ok) {
+    fail('Version: Create', `Failed to create item: ${createRes.status}`);
+    return;
+  }
+
+  const item = (await createRes.json()) as { attire_id: string; version: number };
+  
+  // PATCH with stale version
+  const staleRes = await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ version: 99, notes: 'Should fail' }),
+  });
+
+  if (staleRes.status === 409) {
+    pass('Version: Stale 409', 'PATCH with stale version returns 409');
+  } else {
+    fail('Version: Stale 409', `Expected 409, got ${staleRes.status}`);
+  }
+
+  // Good PATCH increments version by 1
+  const goodRes = await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ version: item.version, notes: 'Updated' }),
+  });
+
+  if (!goodRes.ok) {
+    fail('Version: Good PATCH', `Failed to PATCH: ${goodRes.status}`);
+  } else {
+    const updated = (await goodRes.json()) as { version: number };
+    if (updated.version === item.version + 1) {
+      pass('Version: Increment', `Version incremented from ${item.version} to ${updated.version}`);
+    } else {
+      fail('Version: Increment', `Expected version ${item.version + 1}, got ${updated.version}`);
+    }
+  }
+
+  // Cleanup
+  await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${tokenA}` },
+  });
+}
+
+async function testAuthRequired() {
+  console.log('\n=== TEST 4: Auth Required ===');
+  
+  const endpoints = [
+    { method: 'GET', path: '/inventory' },
+    { method: 'GET', path: '/inventory/00000000-0000-0000-0000-000000000000' },
+    { method: 'POST', path: '/inventory' },
+    { method: 'PATCH', path: '/inventory/00000000-0000-0000-0000-000000000000' },
+    { method: 'DELETE', path: '/inventory/00000000-0000-0000-0000-000000000000' },
+    { method: 'POST', path: '/inventory/import' },
+  ];
+
+  for (const ep of endpoints) {
+    const res = await fetch(`${BASE_URL}${ep.path}`, {
+      method: ep.method,
+      headers: { 'Content-Type': 'application/json' },
+      body: ep.method !== 'GET' && ep.method !== 'DELETE' ? JSON.stringify({}) : undefined,
+    });
+
+    if (res.status === 401) {
+      pass(`Auth: ${ep.method} ${ep.path}`, '401 without session');
+    } else {
+      fail(`Auth: ${ep.method} ${ep.path}`, `Expected 401, got ${res.status}`);
+    }
+  }
+}
+
+async function testInputValidation() {
+  console.log('\n=== TEST 5: Input Validation ===');
+  
+  const tokenA = await login(USER_A.email, USER_A.password);
+  if (!tokenA) {
+    fail('Validation', 'Failed to log in user A');
+    return;
+  }
+
+  // Rating out of range
+  const badRatingRes = await fetch(`${BASE_URL}/inventory`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      entry_method: 'text',
+      auto_categorized_type: 'wig',
+      flexibility_tag: 'as-is-only',
+      condition_rating: 6,
+    }),
+  });
+
+  if (badRatingRes.status === 400) {
+    pass('Validation: Rating Range', 'condition_rating=6 returns 400');
+  } else {
+    fail('Validation: Rating Range', `Expected 400, got ${badRatingRes.status}`);
+  }
+
+  // Bad flexibility_tag
+  const badTagRes = await fetch(`${BASE_URL}/inventory`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      entry_method: 'text',
+      auto_categorized_type: 'wig',
+      flexibility_tag: 'invalid-tag',
+      condition_rating: 5,
+    }),
+  });
+
+  if (badTagRes.status === 400) {
+    pass('Validation: Flexibility Tag', 'Invalid flexibility_tag returns 400');
+  } else {
+    fail('Validation: Flexibility Tag', `Expected 400, got ${badTagRes.status}`);
+  }
+
+  // Missing type
+  const missingTypeRes = await fetch(`${BASE_URL}/inventory`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      entry_method: 'text',
+      flexibility_tag: 'as-is-only',
+      condition_rating: 5,
+    }),
+  });
+
+  if (missingTypeRes.status === 400) {
+    pass('Validation: Missing Type', 'Missing auto_categorized_type returns 400');
+  } else {
+    fail('Validation: Missing Type', `Expected 400, got ${missingTypeRes.status}`);
+  }
+}
+
+async function testCommittedItem() {
+  console.log('\n=== TEST 6: Committed Item Workflow ===');
+  
+  const tokenA = await login(USER_A.email, USER_A.password);
+  if (!tokenA) {
+    fail('Committed', 'Failed to log in user A');
+    return;
+  }
+
+  // Create item
+  const createRes = await fetch(`${BASE_URL}/inventory`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      entry_method: 'text',
+      auto_categorized_type: 'clothing',
+      flexibility_tag: 'as-is-only',
+      condition_rating: 5,
+    }),
+  });
+
+  if (!createRes.ok) {
+    const errorBody = await createRes.text();
+    fail('Committed: Create', `Failed to create item: ${createRes.status} - ${errorBody}`);
+    return;
+  }
+
+  const item = (await createRes.json()) as { attire_id: string; version: number; availability_status: string };
+  
+  if (item.availability_status === 'free') {
+    pass('Committed: Create', 'Item created with status=free');
+  } else {
+    fail('Committed: Create', `Expected status=free, got ${item.availability_status}`);
+  }
+
+  // Commit item with original_project_ref
+  const commitRes = await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      version: item.version,
+      availability_status: 'committed',
+      original_project_ref: 'proj-mobile-123',
+    }),
+  });
+
+  if (!commitRes.ok) {
+    const errorBody = await commitRes.text();
+    fail('Committed: Commit', `Failed to commit: ${commitRes.status} - ${errorBody}`);
+    return;
+  }
+
+  const committed = (await commitRes.json()) as { 
+    attire_id: string; 
+    availability_status: string; 
+    original_project_ref: string; 
+    version: number 
+  };
+  
+  if (committed.availability_status === 'committed' && committed.original_project_ref === 'proj-mobile-123') {
+    pass('Committed: Status Set', 'Item committed with original_project_ref');
+  } else {
+    fail('Committed: Status Set', `Wrong status or ref: ${committed.availability_status}, ${committed.original_project_ref}`);
+  }
+
+  // DELETE should be refused (400)
+  const deleteRes = await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${tokenA}` },
+  });
+
+  if (deleteRes.status === 400) {
+    const body = await deleteRes.json() as { message: string };
+    if (body.message.includes('Cannot delete')) {
+      pass('Committed: DELETE Refused', 'Cannot delete committed item (400)');
+    } else {
+      fail('Committed: DELETE Refused', `Got 400 but wrong message: ${body.message}`);
+    }
+  } else {
+    fail('Committed: DELETE Refused', `Expected 400, got ${deleteRes.status}`);
+  }
+
+  // Release item (set to free, clears original_project_ref)
+  const releaseRes = await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      version: committed.version,
+      availability_status: 'free',
+    }),
+  });
+
+  if (!releaseRes.ok) {
+    const errorBody = await releaseRes.text();
+    fail('Committed: Release', `Failed to release: ${releaseRes.status} - ${errorBody}`);
+  } else {
+    const released = (await releaseRes.json()) as { 
+      availability_status: string; 
+      original_project_ref: string | null;
+      version: number;
+    };
+    if (released.availability_status === 'free' && released.original_project_ref === null) {
+      pass('Committed: Release', 'Item released (status=free, ref=null)');
+    } else {
+      fail('Committed: Release', `Wrong release state: status=${released.availability_status}, ref=${released.original_project_ref}`);
+    }
+
+    // Now DELETE should succeed
+    const deleteAfterReleaseRes = await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${tokenA}` },
+    });
+
+    if (deleteAfterReleaseRes.status === 204) {
+      pass('Committed: DELETE After Release', 'Free item deleted successfully');
+    } else {
+      fail('Committed: DELETE After Release', `Expected 204, got ${deleteAfterReleaseRes.status}`);
+    }
+  }
+}
+
+async function testCommitWithListing() {
+  console.log('\n=== TEST 7: Commit Refused for Listed Item ===');
+  
+  const tokenA = await login(USER_A.email, USER_A.password);
+  if (!tokenA) {
+    fail('Listing', 'Failed to log in user A');
+    return;
+  }
+
+  // Create item
+  const createRes = await fetch(`${BASE_URL}/inventory`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      entry_method: 'text',
+      auto_categorized_type: 'prop',
+      flexibility_tag: 'as-is-only',
+      condition_rating: 4,
+    }),
+  });
+
+  if (!createRes.ok) {
+    fail('Listing: Create', `Failed to create item: ${createRes.status}`);
+    return;
+  }
+
+  const item = (await createRes.json()) as { attire_id: string; version: number };
+
+  // Create an active listing for this item
+  const listingRes = await fetch(`${BASE_URL}/listings`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      item_id: item.attire_id,
+      transaction_type: 'sell',
+      price: 100,
+      title: 'Test listing',
+      description: 'Test',
+    }),
+  });
+
+  // If listings endpoint doesn't exist (M2 not implemented), skip this test
+  if (listingRes.status === 404) {
+    pass('Listing: Skipped', 'Listings API not available (M2); constraint will be enforced when implemented');
+    // Cleanup
+    await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${tokenA}` },
+    });
+    return;
+  }
+
+  if (!listingRes.ok) {
+    fail('Listing: Create Listing', `Failed to create listing: ${listingRes.status}`);
+    // Cleanup
+    await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${tokenA}` },
+    });
+    return;
+  }
+
+  const listing = (await listingRes.json()) as { listing_id: string };
+  pass('Listing: Create Listing', 'Listing created successfully');
+
+  // Try to commit the item (should be refused with 409)
+  const commitRes = await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      version: item.version,
+      availability_status: 'committed',
+      original_project_ref: 'proj-mobile-456',
+    }),
+  });
+
+  if (commitRes.status === 409) {
+    const body = await commitRes.json() as { message: string };
+    if (body.message.includes('active listing')) {
+      pass('Listing: Commit Refused', 'Cannot commit item with active listing (409)');
+    } else {
+      fail('Listing: Commit Refused', `Got 409 but wrong message: ${body.message}`);
+    }
+  } else {
+    fail('Listing: Commit Refused', `Expected 409, got ${commitRes.status}`);
+  }
+
+  // Cleanup: cancel listing, then delete item
+  await fetch(`${BASE_URL}/listings/${listing.listing_id}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ listing_status: 'cancelled' }),
+  });
+
+  await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${tokenA}` },
+  });
+  pass('Listing: Cleanup', 'Test item and listing cleaned up');
+}
+
 async function main() {
   console.log('ForgeMind M1 Inventory Verification');
   console.log('====================================\n');
@@ -292,6 +709,11 @@ async function main() {
 
   await testOwnerOnly();
   await testImportDuplicates();
+  await testVersionLocking();
+  await testAuthRequired();
+  await testInputValidation();
+  await testCommittedItem();
+  await testCommitWithListing();
 
   console.log('\n=== MANUAL TESTS (NOT AUTOMATED) ===');
   console.log('✓ Per-user AsyncStorage: Login as user A, add items, logout, login as user B.');

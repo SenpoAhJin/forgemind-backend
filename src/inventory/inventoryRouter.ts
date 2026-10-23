@@ -125,6 +125,14 @@ inventoryRouter.patch('/:item_id', async (req: Request, res: Response) => {
       return;
     }
 
+    // Validate availability_status if present
+    if (input.availability_status !== undefined && 
+        input.availability_status !== 'free' && 
+        input.availability_status !== 'committed') {
+      res.status(400).json({ error: 'invalid_input', message: 'availability_status must be "free" or "committed"' });
+      return;
+    }
+
     // Validate condition_rating if present
     if (input.condition_rating !== undefined && 
         (typeof input.condition_rating !== 'number' || input.condition_rating < 1 || input.condition_rating > 5)) {
@@ -141,6 +149,10 @@ inventoryRouter.patch('/:item_id', async (req: Request, res: Response) => {
       res.status(403).json({ error: 'forbidden', message: error.message });
     } else if (error instanceof VersionConflictError) {
       res.status(409).json({ error: 'version_conflict', message: error.message });
+    } else if (error instanceof Error && 
+               (error.message.includes('Cannot commit item') || 
+                error.message.includes('availability_status must be'))) {
+      res.status(409).json({ error: 'conflict', message: error.message });
     } else {
       console.error('[inventory] Update error:', error);
       res.status(500).json({ error: 'internal_error', message: 'Failed to update inventory item' });
