@@ -71,6 +71,7 @@ export interface UpdateInventoryItemInput {
   acquired_date?: string;
   acquisition_cost?: number;
   notes?: string;
+  original_project_ref?: string; // Allow updating project reference
   version: number; // Required for optimistic locking
 }
 
@@ -324,6 +325,10 @@ export async function updateInventoryItem(
     if (input.notes !== undefined) {
       updates.push(`notes = $${paramIndex++}`);
       values.push(input.notes);
+    }
+    if (input.original_project_ref !== undefined) {
+      updates.push(`original_project_ref = $${paramIndex++}`);
+      values.push(input.original_project_ref);
     }
 
     updates.push(`version = version + 1`);

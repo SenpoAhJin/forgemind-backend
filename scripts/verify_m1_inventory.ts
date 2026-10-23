@@ -14,12 +14,12 @@ const BASE_URL = `http://localhost:${config.port}`;
 // Test accounts (must exist in database)
 const USER_A = {
   email: 'tester-a@forgemind.test',
-  password: 'test123',
+  password: 'test123456',
 };
 
 const USER_B = {
   email: 'tester-b@forgemind.test',
-  password: 'test123',
+  password: 'test123456',
 };
 
 interface TestResult {
@@ -53,8 +53,8 @@ async function login(email: string, password: string): Promise<string | null> {
       return null;
     }
 
-    const data = await res.json();
-    return data.refreshToken;
+    const data = (await res.json()) as { session_token: string };
+    return data.session_token;
   } catch (error) {
     console.error(`Login error for ${email}:`, error);
     return null;
@@ -97,7 +97,7 @@ async function testOwnerOnly() {
     return;
   }
 
-  const item = await createRes.json();
+  const item = (await createRes.json()) as { attire_id: string };
   const itemId = item.attire_id;
   pass('Owner-Only: Create', `Item ${itemId} created by user A`);
 
@@ -226,7 +226,7 @@ async function testImportDuplicates() {
     return;
   }
 
-  const result1 = await import1.json();
+  const result1 = (await import1.json()) as { imported: number; skipped: number };
   if (result1.imported === 2 && result1.skipped === 0) {
     pass('Import: First', `Imported ${result1.imported} items`);
   } else {
@@ -248,7 +248,7 @@ async function testImportDuplicates() {
     return;
   }
 
-  const result2 = await import2.json();
+  const result2 = (await import2.json()) as { imported: number; skipped: number };
   if (result2.imported === 0 && result2.skipped === 2) {
     pass('Import: Second', `Skipped ${result2.skipped} duplicates`);
   } else {
@@ -265,7 +265,7 @@ async function testImportDuplicates() {
     return;
   }
 
-  const { items } = await listRes.json();
+  const { items } = (await listRes.json()) as { items: any[] };
   const imported = items.filter((i: any) => i.client_id?.startsWith('attr-test-dedup-'));
   
   if (imported.length === 2) {

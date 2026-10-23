@@ -189,6 +189,12 @@ app.use('/api/ai', matcherRouter_1.default);
 const tradesRouter_1 = __importDefault(require("./trades/tradesRouter"));
 app.use('/trades', tradesRouter_1.default);
 /**
+ * Inventory: marketplace item management on server.
+ * Uses owned_attire table extended for marketplace (client_id, version, provenance tracking).
+ */
+const inventoryRouter_1 = __importDefault(require("./inventory/inventoryRouter"));
+app.use('/inventory', inventoryRouter_1.default);
+/**
  * Marketplace Registration: cosplayer submits, reads back own registration.
  * See src/marketplace/router.ts for endpoint details
  */
