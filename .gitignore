@@ -3,3 +3,10 @@
 
 # Candidate phrase files (contain mined phrases, not committed)
 scripts/data/chat_curated_candidates*.txt
+
+# Test environment files
+.env.test
+
+# Backup files
+*.dump
+backup_*.dump

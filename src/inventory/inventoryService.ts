@@ -92,7 +92,9 @@ export interface ImportInventoryItemInput {
     photo_url: string | null;
     condition_rating: number;
   }>;
-  committed_to_project_id: string | null; // Ignored; stored in original_project_ref
+  availability_status?: 'free' | 'committed' | 'reserved'; // Defaults to 'free'; 'reserved' ignored
+  committed_to_project_id: string | null; // FK ignored; stored in original_project_ref
+  original_project_ref?: string | null; // Mobile project ID for committed items
   acquired_date: string;
   acquisition_cost: number;
   notes: string;
@@ -449,9 +451,13 @@ export async function importInventoryItems(
         continue;
       }
 
-      // Import item (availability=free, committed_to_project_id=NULL)
-      // Store original project ref if present
-      const originalProjectRef = item.committed_to_project_id || null;
+      // Import item preserving availability_status if 'committed', storing original_project_ref
+      // Server never trusts client for 'reserved' or reserved_trade_id
+      const availabilityStatus = item.availability_status === 'committed' ? 'committed' : 'free';
+      const originalProjectRef = 
+        item.original_project_ref || 
+        (item.availability_status === 'committed' ? item.committed_to_project_id : null) ||
+        null;
 
       await query(
         `INSERT INTO owned_attire (
@@ -462,7 +468,7 @@ export async function importInventoryItems(
           acquired_date, acquisition_cost, notes,
           version, created_at, updated_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'free', NULL, $13, $14, $15, $16, 1, $17, $18
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULL, $14, $15, $16, $17, 1, $18, $19
         )`,
         [
           userId,
@@ -477,6 +483,7 @@ export async function importInventoryItems(
           item.flexibility_tag,
           item.condition_rating,
           JSON.stringify(item.condition_photo_history),
+          availabilityStatus,
           originalProjectRef,
           item.acquired_date,
           item.acquisition_cost,

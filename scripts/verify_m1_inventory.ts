@@ -588,6 +588,242 @@ async function testCommittedItem() {
   }
 }
 
+async function testImportCommittedStatus() {
+  console.log('\n=== TEST 8: Import Preserves Committed Status ===');
+  
+  const tokenA = await login(USER_A.email, USER_A.password);
+  if (!tokenA) {
+    fail('Import Committed', 'Failed to log in user A');
+    return;
+  }
+
+  const testItems = [
+    {
+      client_id: 'attr-import-committed-free-1',
+      entry_method: 'photo' as const,
+      entry_language: 'english' as const,
+      original_input_text: 'Free item for import test',
+      photo_urls: [],
+      auto_categorized_type: 'wig',
+      auto_categorized_color: 'blue',
+      auto_categorized_style: 'short',
+      flexibility_tag: 'as-is-only' as const,
+      condition_rating: 5,
+      condition_photo_history: [{
+        timestamp: new Date().toISOString(),
+        photo_url: null,
+        condition_rating: 5,
+      }],
+      availability_status: 'free' as const,
+      committed_to_project_id: null,
+      acquired_date: '2026-10-20',
+      acquisition_cost: 50,
+      notes: 'Free test item',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+    {
+      client_id: 'attr-import-committed-yes-2',
+      entry_method: 'text' as const,
+      entry_language: 'taglish' as const,
+      original_input_text: 'Committed item for import test',
+      photo_urls: [],
+      auto_categorized_type: 'clothing',
+      auto_categorized_color: 'red',
+      auto_categorized_style: 'formal',
+      flexibility_tag: 'dye-willing' as const,
+      condition_rating: 4,
+      condition_photo_history: [{
+        timestamp: new Date().toISOString(),
+        photo_url: null,
+        condition_rating: 4,
+      }],
+      availability_status: 'committed' as const,
+      committed_to_project_id: 'mobile-proj-789',
+      original_project_ref: 'mobile-proj-789',
+      acquired_date: '2026-10-21',
+      acquisition_cost: 150,
+      notes: 'Committed test item',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+    {
+      client_id: 'attr-import-committed-reserved-3',
+      entry_method: 'photo' as const,
+      entry_language: 'english' as const,
+      original_input_text: 'Reserved status rejected',
+      photo_urls: [],
+      auto_categorized_type: 'prop',
+      auto_categorized_color: 'silver',
+      auto_categorized_style: 'weapon',
+      flexibility_tag: 'as-is-only' as const,
+      condition_rating: 3,
+      condition_photo_history: [{
+        timestamp: new Date().toISOString(),
+        photo_url: null,
+        condition_rating: 3,
+      }],
+      availability_status: 'reserved' as any, // Client tries to set reserved
+      committed_to_project_id: null,
+      acquired_date: '2026-10-22',
+      acquisition_cost: 75,
+      notes: 'Should be stored as free',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+  ];
+
+  // Import all three items
+  const importRes = await fetch(`${BASE_URL}/inventory/import`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ items: testItems }),
+  });
+
+  if (!importRes.ok) {
+    fail('Import Committed: Import', `Import failed: ${importRes.status}`);
+    return;
+  }
+
+  const importResult = (await importRes.json()) as { imported: number; skipped: number };
+  if (importResult.imported === 3 && importResult.skipped === 0) {
+    pass('Import Committed: Import', 'Imported 3 items (free, committed, reserved→free)');
+  } else {
+    fail('Import Committed: Import', `Expected imported=3, skipped=0; got imported=${importResult.imported}, skipped=${importResult.skipped}`);
+  }
+
+  // Get all items back
+  const getRes = await fetch(`${BASE_URL}/inventory`, {
+    headers: { 'Authorization': `Bearer ${tokenA}` },
+  });
+
+  if (!getRes.ok) {
+    fail('Import Committed: GET', `GET failed: ${getRes.status}`);
+    return;
+  }
+
+  const getBody = (await getRes.json()) as { items: Array<{
+    attire_id: string;
+    client_id: string;
+    availability_status: string;
+    original_project_ref: string | null;
+  }>};
+
+  const allItems = getBody.items;
+
+  const freeItem = allItems.find(i => i.client_id === 'attr-import-committed-free-1');
+  const committedItem = allItems.find(i => i.client_id === 'attr-import-committed-yes-2');
+  const reservedItem = allItems.find(i => i.client_id === 'attr-import-committed-reserved-3');
+
+  if (!freeItem || !committedItem || !reservedItem) {
+    fail('Import Committed: Verify', 'Not all items found after import');
+    return;
+  }
+
+  // Verify free item
+  if (freeItem.availability_status === 'free') {
+    pass('Import Committed: Free Status', 'Free item remained free');
+  } else {
+    fail('Import Committed: Free Status', `Expected free, got ${freeItem.availability_status}`);
+  }
+
+  // Verify committed item preserved status and original_project_ref
+  if (committedItem.availability_status === 'committed' && committedItem.original_project_ref === 'mobile-proj-789') {
+    pass('Import Committed: Committed Status', 'Committed item preserved status + original_project_ref');
+  } else {
+    fail('Import Committed: Committed Status', `Expected committed + ref, got ${committedItem.availability_status}, ref=${committedItem.original_project_ref}`);
+  }
+
+  // Try to delete committed item (should fail)
+  const deleteCommittedRes = await fetch(`${BASE_URL}/inventory/${committedItem.attire_id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${tokenA}` },
+  });
+
+  if (deleteCommittedRes.status === 400) {
+    pass('Import Committed: DELETE Blocked', 'Cannot delete committed item (400)');
+  } else {
+    fail('Import Committed: DELETE Blocked', `Expected 400, got ${deleteCommittedRes.status}`);
+  }
+
+  // Verify reserved→free conversion
+  if (reservedItem.availability_status === 'free') {
+    pass('Import Committed: Reserved→Free', 'Reserved status converted to free');
+  } else {
+    fail('Import Committed: Reserved→Free', `Expected free, got ${reservedItem.availability_status}`);
+  }
+
+  // Re-import same items (should skip all 3)
+  const reimportRes = await fetch(`${BASE_URL}/inventory/import`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ items: testItems }),
+  });
+
+  if (reimportRes.ok) {
+    const reimportResult = (await reimportRes.json()) as { imported: number; skipped: number };
+    if (reimportResult.imported === 0 && reimportResult.skipped === 3) {
+      pass('Import Committed: Deduplication', 'Re-import skipped all 3 items');
+    } else {
+      fail('Import Committed: Deduplication', `Expected imported=0, skipped=3; got imported=${reimportResult.imported}, skipped=${reimportResult.skipped}`);
+    }
+  } else {
+    fail('Import Committed: Deduplication', `Re-import failed: ${reimportRes.status}`);
+  }
+
+  // Count total items (should still be 3)
+  const countRes = await fetch(`${BASE_URL}/inventory`, {
+    headers: { 'Authorization': `Bearer ${tokenA}` },
+  });
+
+  if (countRes.ok) {
+    const countBody = await countRes.json() as { items: Array<any> };
+    const testItemsCount = countBody.items.filter(i => 
+      i.client_id && i.client_id.startsWith('attr-import-committed-')
+    ).length;
+    
+    if (testItemsCount === 3) {
+      pass('Import Committed: Count', 'Exactly 3 items (no duplicates)');
+    } else {
+      fail('Import Committed: Count', `Expected 3 test items, found ${testItemsCount}`);
+    }
+  }
+
+  // Cleanup
+  await fetch(`${BASE_URL}/inventory/${freeItem.attire_id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${tokenA}` },
+  });
+  
+  // Release committed item then delete
+  await fetch(`${BASE_URL}/inventory/${committedItem.attire_id}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${tokenA}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ version: 1, availability_status: 'free' }),
+  });
+  
+  await fetch(`${BASE_URL}/inventory/${committedItem.attire_id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${tokenA}` },
+  });
+  
+  await fetch(`${BASE_URL}/inventory/${reservedItem.attire_id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${tokenA}` },
+  });
+
+  pass('Import Committed: Cleanup', 'Test items deleted');
+}
+
 async function testCommitWithListing() {
   console.log('\n=== TEST 7: Commit Refused for Listed Item ===');
   
@@ -713,6 +949,7 @@ async function main() {
   await testAuthRequired();
   await testInputValidation();
   await testCommittedItem();
+  await testImportCommittedStatus();
   await testCommitWithListing();
 
   console.log('\n=== MANUAL TESTS (NOT AUTOMATED) ===');

@@ -295,9 +295,12 @@ async function importInventoryItems(userId, items) {
                 skipped++;
                 continue;
             }
-            // Import item (availability=free, committed_to_project_id=NULL)
-            // Store original project ref if present
-            const originalProjectRef = item.committed_to_project_id || null;
+            // Import item preserving availability_status if 'committed', storing original_project_ref
+            // Server never trusts client for 'reserved' or reserved_trade_id
+            const availabilityStatus = item.availability_status === 'committed' ? 'committed' : 'free';
+            const originalProjectRef = item.original_project_ref ||
+                (item.availability_status === 'committed' ? item.committed_to_project_id : null) ||
+                null;
             await (0, db_1.query)(`INSERT INTO owned_attire (
           user_id, client_id, entry_method, entry_language, original_input_text,
           photo_urls, auto_categorized_type, auto_categorized_color, auto_categorized_style,
@@ -306,7 +309,7 @@ async function importInventoryItems(userId, items) {
           acquired_date, acquisition_cost, notes,
           version, created_at, updated_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'free', NULL, $13, $14, $15, $16, 1, $17, $18
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULL, $14, $15, $16, $17, 1, $18, $19
         )`, [
                 userId,
                 item.client_id,
@@ -320,6 +323,7 @@ async function importInventoryItems(userId, items) {
                 item.flexibility_tag,
                 item.condition_rating,
                 JSON.stringify(item.condition_photo_history),
+                availabilityStatus,
                 originalProjectRef,
                 item.acquired_date,
                 item.acquisition_cost,
