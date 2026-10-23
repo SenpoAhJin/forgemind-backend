@@ -160,6 +160,13 @@ import tradesRouter from './trades/tradesRouter';
 app.use('/trades', tradesRouter);
 
 /**
+ * Inventory: marketplace item management on server.
+ * Uses owned_attire table extended for marketplace (client_id, version, provenance tracking).
+ */
+import inventoryRouter from './inventory/inventoryRouter';
+app.use('/inventory', inventoryRouter);
+
+/**
  * Marketplace Registration: cosplayer submits, reads back own registration.
  * See src/marketplace/router.ts for endpoint details
  */
