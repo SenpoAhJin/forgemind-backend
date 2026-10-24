@@ -18,7 +18,7 @@ import { isOfferTypeAllowedForCategory } from './offerRules';
 const offersRouter = Router();
 
 type OfferType = 'purchase' | 'trade' | 'commission';
-type OfferStatus = 'pending' | 'accepted' | 'declined' | 'withdrawn';
+type OfferStatus = 'pending' | 'accepted' | 'awaiting_confirmation' | 'completed' | 'declined' | 'withdrawn';
 
 interface OfferRow {
   offer_id: string;
@@ -39,6 +39,8 @@ interface OfferRow {
   listing_price: string | null;
   proposer_display_name: string | null;
   seller_display_name: string | null;
+  proposer_confirmed_at: Date | null;
+  recipient_confirmed_at: Date | null;
   created_at: Date;
   responded_at: Date | null;
   updated_at: Date;
@@ -373,6 +375,7 @@ offersRouter.post('/:offer_id/accept', async (req: Request, res: Response) => {
 
   // Rule: for purchase/trade, no other accepted offer on listing
   // Use transaction with FOR UPDATE to prevent concurrent accepts
+  // Purchase/trade offers transition to 'awaiting_confirmation' state
   if (offer.offer_type !== 'commission') {
     try {
       const updated = await withTransaction(async (client) => {
@@ -381,10 +384,10 @@ offersRouter.post('/:offer_id/accept', async (req: Request, res: Response) => {
           offer.listing_id,
         ]);
 
-        // Check for existing accepted offer (inside transaction)
+        // Check for existing accepted/awaiting_confirmation offer (inside transaction)
         const existingAccepted = await client.query<{ offer_id: string }>(
           `SELECT offer_id FROM structured_offers
-            WHERE listing_id = $1 AND status = 'accepted' AND offer_id != $2`,
+            WHERE listing_id = $1 AND status IN ('accepted', 'awaiting_confirmation') AND offer_id != $2`,
           [offer.listing_id, offer.offer_id],
         );
 
@@ -392,10 +395,10 @@ offersRouter.post('/:offer_id/accept', async (req: Request, res: Response) => {
           throw new Error('CONFLICT');
         }
 
-        // Accept offer
+        // Accept offer - set to awaiting_confirmation for purchase/trade
         const result = await client.query<OfferRow>(
           `UPDATE structured_offers
-              SET status = 'accepted', responded_at = NOW(), updated_at = NOW()
+              SET status = 'awaiting_confirmation', responded_at = NOW(), updated_at = NOW()
             WHERE offer_id = $1
             RETURNING *`,
           [req.params.offer_id],
@@ -416,7 +419,7 @@ offersRouter.post('/:offer_id/accept', async (req: Request, res: Response) => {
       }
     }
   } else {
-    // Commission: no conflict check needed, multiple accepts allowed
+    // Commission: no conflict check needed, multiple accepts allowed, stays in 'accepted' status
     const updated = await query<OfferRow>(
       `UPDATE structured_offers
           SET status = 'accepted', responded_at = NOW(), updated_at = NOW()
@@ -527,6 +530,180 @@ offersRouter.post('/:offer_id/withdraw', async (req: Request, res: Response) => 
 });
 
 /**
+ * POST /marketplace/offers/:offer_id/confirm
+ * Confirm readiness for item transfer (both buyer and seller must confirm).
+ * When both parties confirm, ownership transfers and offer status becomes 'completed'.
+ * Only applies to purchase/trade offers in 'awaiting_confirmation' status.
+ * Commission offers skip this flow entirely.
+ */
+offersRouter.post('/:offer_id/confirm', async (req: Request, res: Response) => {
+  const session = await requireSession(req, res);
+  if (!session) return;
+
+  const caller = await requireMarketplaceUser(req, res);
+  if (!caller) return;
+
+  try {
+    await withTransaction(async (client) => {
+      // Load offer with listing details
+      const offerRows = await client.query<OfferRow & { seller_user_id: string; item_id: string | null }>(
+        `SELECT o.*, l.seller_user_id, l.item_id
+           FROM structured_offers o
+           JOIN listings l ON l.listing_id = o.listing_id
+          WHERE o.offer_id = $1
+            FOR UPDATE OF o`,
+        [req.params.offer_id],
+      );
+
+      if (offerRows.rows.length === 0) {
+        res.status(404).json({ error: 'offer_not_found', message: 'Offer not found.' });
+        return;
+      }
+
+      const offer = offerRows.rows[0];
+
+      // Rule: only parties can confirm
+      const isProposer = offer.proposer_user_id === caller.user_id;
+      const isRecipient = offer.seller_user_id === caller.user_id;
+      
+      if (!isProposer && !isRecipient) {
+        res.status(403).json({ error: 'forbidden', message: 'Only the buyer or seller can confirm this offer.' });
+        return;
+      }
+
+      // Rule: only awaiting_confirmation offers can be confirmed
+      if (offer.status !== 'awaiting_confirmation') {
+        res.status(400).json({ 
+          error: 'invalid_status', 
+          message: 'Only offers in awaiting_confirmation status can be confirmed.' 
+        });
+        return;
+      }
+
+      // Rule: commission offers should not reach this endpoint
+      if (offer.offer_type === 'commission') {
+        res.status(400).json({ 
+          error: 'invalid_offer_type', 
+          message: 'Commission offers do not require confirmation.' 
+        });
+        return;
+      }
+
+      // Determine which party is confirming
+      const confirmField = isProposer ? 'proposer_confirmed_at' : 'recipient_confirmed_at';
+      const alreadyConfirmed = isProposer ? offer.proposer_confirmed_at : offer.recipient_confirmed_at;
+
+      // Idempotent: if already confirmed, return success
+      if (alreadyConfirmed) {
+        res.json(formatOffer(offer));
+        return;
+      }
+
+      // Set confirmation timestamp
+      await client.query(
+        `UPDATE structured_offers 
+            SET ${confirmField} = NOW(), updated_at = NOW() 
+          WHERE offer_id = $1`,
+        [req.params.offer_id],
+      );
+
+      // Check if both parties have now confirmed
+      const updatedOfferRows = await client.query<OfferRow & { seller_user_id: string; item_id: string | null }>(
+        `SELECT o.*, l.seller_user_id, l.item_id
+           FROM structured_offers o
+           JOIN listings l ON l.listing_id = o.listing_id
+          WHERE o.offer_id = $1`,
+        [req.params.offer_id],
+      );
+
+      const updatedOffer = updatedOfferRows.rows[0];
+
+      // If both confirmed, complete the offer (transfer ownership)
+      if (updatedOffer.proposer_confirmed_at && updatedOffer.recipient_confirmed_at) {
+        await completeOfferInternal(
+          client,
+          updatedOffer.offer_id,
+          updatedOffer.item_id,
+          updatedOffer.listing_id,
+          updatedOffer.seller_user_id,
+          updatedOffer.proposer_user_id,
+        );
+
+        // Reload to get updated status
+        const finalOfferRows = await client.query<OfferRow>(
+          'SELECT o.* FROM structured_offers o WHERE o.offer_id = $1',
+          [req.params.offer_id],
+        );
+
+        res.json(formatOffer(finalOfferRows.rows[0]));
+      } else {
+        // Only one party confirmed so far
+        res.json(formatOffer(updatedOffer));
+      }
+    });
+  } catch (error) {
+    console.error('Error confirming offer:', error);
+    res.status(500).json({ error: 'server_error', message: 'Failed to confirm offer.' });
+  }
+});
+
+/**
+ * Internal function to complete an offer after both parties confirm.
+ * Transfers item ownership from seller to buyer and marks offer as completed.
+ */
+async function completeOfferInternal(
+  client: any,
+  offerId: string,
+  attireId: string | null,
+  listingId: string,
+  sellerUserId: string,
+  buyerUserId: string,
+): Promise<void> {
+  // Defensive check: item_id should exist for purchase/trade offers
+  if (!attireId) {
+    throw new Error('Cannot complete offer: listing has no inventory item');
+  }
+
+  // Transfer ownership in owned_attire table
+  await client.query(
+    `UPDATE owned_attire
+        SET user_id = $1,
+            availability_status = 'free',
+            updated_at = NOW()
+      WHERE attire_id = $2`,
+    [buyerUserId, attireId],
+  );
+
+  // Write ownership history
+  await client.query(
+    `INSERT INTO inventory_item_history (
+      item_id, from_user_id, to_user_id, reason, listing_id, offer_id, transferred_at
+    ) VALUES ($1, $2, $3, 'marketplace_sale', $4, $5, NOW())`,
+    [attireId, sellerUserId, buyerUserId, listingId, offerId],
+  );
+
+  // Mark offer as completed
+  await client.query(
+    `UPDATE structured_offers
+        SET status = 'completed', updated_at = NOW()
+      WHERE offer_id = $1`,
+    [offerId],
+  );
+
+  // Write audit events
+  await client.query(
+    `INSERT INTO audit_events (user_id, action, entity_type, entity_id, details, timestamp)
+     VALUES ($1, 'complete', 'offer', $2, $3, NOW())`,
+    [buyerUserId, offerId, JSON.stringify({ 
+      action: 'offer_completed', 
+      item_transferred: attireId,
+      from_user: sellerUserId,
+      to_user: buyerUserId 
+    })],
+  );
+}
+
+/**
  * Format offer row for API response. Never includes email addresses.
  */
 function formatOffer(row: OfferRow): Record<string, any> {
@@ -547,6 +724,8 @@ function formatOffer(row: OfferRow): Record<string, any> {
     listing_price: row.listing_price ? parseFloat(row.listing_price) : null,
     proposer_display_name: row.proposer_display_name,
     seller_display_name: row.seller_display_name,
+    proposer_confirmed_at: row.proposer_confirmed_at ? row.proposer_confirmed_at.toISOString() : null,
+    recipient_confirmed_at: row.recipient_confirmed_at ? row.recipient_confirmed_at.toISOString() : null,
     created_at: row.created_at.toISOString(),
     responded_at: row.responded_at ? row.responded_at.toISOString() : null,
     updated_at: row.updated_at.toISOString(),
