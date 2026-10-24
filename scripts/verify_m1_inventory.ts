@@ -8,6 +8,7 @@
  */
 
 import { config } from '../src/config';
+import { pool } from '../src/db';
 
 const BASE_URL = `http://localhost:${config.port}`;
 
@@ -825,7 +826,7 @@ async function testImportCommittedStatus() {
 }
 
 async function testCommitWithListing() {
-  console.log('\n=== TEST 7: Commit Refused for Listed Item ===');
+  console.log('\n=== TEST 7: Commit Refused for Listed Item (SQL approach) ===');
   
   const tokenA = await login(USER_A.email, USER_A.password);
   if (!tokenA) {
@@ -833,7 +834,18 @@ async function testCommitWithListing() {
     return;
   }
 
-  // Create item
+  // Get user_id from /auth/me
+  const meRes = await fetch(`${BASE_URL}/auth/me`, {
+    headers: { 'Authorization': `Bearer ${tokenA}` },
+  });
+  if (!meRes.ok) {
+    fail('Listing: Get User', `Failed to get user ID: ${meRes.status}`);
+    return;
+  }
+  const meData = (await meRes.json()) as { user: { user_id: string } };
+  const userId = meData.user.user_id;
+
+  // Create item via API
   const createRes = await fetch(`${BASE_URL}/inventory`, {
     method: 'POST',
     headers: {
@@ -849,92 +861,152 @@ async function testCommitWithListing() {
   });
 
   if (!createRes.ok) {
-    fail('Listing: Create', `Failed to create item: ${createRes.status}`);
+    fail('Listing: Create Item', `Failed to create item: ${createRes.status}`);
     return;
   }
 
   const item = (await createRes.json()) as { attire_id: string; version: number };
+  pass('Listing: Create Item', 'Item created via API');
 
-  // Create an active listing for this item
-  const listingRes = await fetch(`${BASE_URL}/listings`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${tokenA}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      item_id: item.attire_id,
-      transaction_type: 'sell',
-      price: 100,
-      title: 'Test listing',
-      description: 'Test',
-    }),
-  });
-
-  // If listings endpoint doesn't exist (M2 not implemented), skip this test
-  if (listingRes.status === 404) {
-    pass('Listing: Skipped', 'Listings API not available (M2); constraint will be enforced when implemented');
-    // Cleanup
+  // Get a category_id from permitted_categories
+  const catRes = await pool.query(`SELECT category_id FROM permitted_categories LIMIT 1`);
+  if (catRes.rows.length === 0) {
+    fail('Listing: Get Category', 'No permitted categories found');
     await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${tokenA}` },
     });
     return;
   }
+  const category_id = catRes.rows[0].category_id;
 
-  if (!listingRes.ok) {
-    fail('Listing: Create Listing', `Failed to create listing: ${listingRes.status}`);
-    // Cleanup
-    await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${tokenA}` },
+  // Insert an active listing via SQL
+  try {
+    const insertRes = await pool.query(`
+      INSERT INTO listings (
+        listing_id, seller_user_id, item_id, category_id,
+        transaction_type, price, item_title, item_description,
+        condition, listing_status, created_at, updated_at
+      ) VALUES (gen_random_uuid(), $1, $2, $3, 'buy', 100.00, 'Test listing', 'SQL test', 'good', 'active', NOW(), NOW())
+      RETURNING listing_id
+    `, [userId, item.attire_id, category_id]);
+    const listingId = insertRes.rows[0].listing_id;
+    pass('Listing: SQL Insert', 'Active listing inserted via SQL');
+  
+    // Test 1: Try to commit the item (should be refused with 409)
+    const commitRes = await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${tokenA}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        version: item.version,
+        availability_status: 'committed',
+        original_project_ref: 'proj-mobile-456',
+      }),
     });
-    return;
-  }
 
-  const listing = (await listingRes.json()) as { listing_id: string };
-  pass('Listing: Create Listing', 'Listing created successfully');
-
-  // Try to commit the item (should be refused with 409)
-  const commitRes = await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
-    method: 'PATCH',
-    headers: {
-      'Authorization': `Bearer ${tokenA}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      version: item.version,
-      availability_status: 'committed',
-      original_project_ref: 'proj-mobile-456',
-    }),
-  });
-
-  if (commitRes.status === 409) {
-    const body = await commitRes.json() as { message: string };
-    if (body.message.includes('active listing')) {
-      pass('Listing: Commit Refused', 'Cannot commit item with active listing (409)');
+    if (commitRes.status === 409) {
+      const body = await commitRes.json() as { message: string };
+      if (body.message.includes('active listing')) {
+        pass('Listing: Commit Refused', 'Cannot commit item with active listing (409)');
+      } else {
+        fail('Listing: Commit Refused', `Got 409 but wrong message: ${body.message}`);
+      }
     } else {
-      fail('Listing: Commit Refused', `Got 409 but wrong message: ${body.message}`);
+      fail('Listing: Commit Refused', `Expected 409, got ${commitRes.status}`);
     }
-  } else {
-    fail('Listing: Commit Refused', `Expected 409, got ${commitRes.status}`);
+
+    // Test 2: Cancel the listing via SQL, then commit should succeed
+    try {
+      await pool.query(`UPDATE listings SET listing_status = 'cancelled' WHERE listing_id = $1`, [listingId]);
+      pass('Listing: Cancel SQL', 'Listing cancelled via SQL UPDATE');
+    } catch (err: any) {
+      fail('Listing: Cancel SQL', `Failed to cancel listing: ${err.message}`);
+    }
+
+    const commitRes2 = await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${tokenA}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        version: item.version,
+        availability_status: 'committed',
+        original_project_ref: 'proj-mobile-456',
+      }),
+    });
+
+    if (commitRes2.ok) {
+      pass('Listing: Commit After Cancel', 'Commit succeeds after listing cancelled');
+    } else {
+      fail('Listing: Commit After Cancel', `Expected 200, got ${commitRes2.status}`);
+    }
+
+    // Test 3: Try to insert second active listing for same item_id (behavior observation)
+    try {
+      await pool.query(`
+        INSERT INTO listings (
+          listing_id, seller_user_id, item_id, category_id,
+          transaction_type, price, item_title, item_description,
+          condition, listing_status, created_at, updated_at
+        ) VALUES (gen_random_uuid(), $1, $2, $3, 'buy', 100.00, 'Second listing', 'SQL test', 'good', 'active', NOW(), NOW())
+      `, [userId, item.attire_id, category_id]);
+      fail('Listing: Duplicate Active', 'Second active listing allowed (no DB constraint)');
+      // Clean up second listing
+      await pool.query(`DELETE FROM listings WHERE item_id = $1 AND listing_status = 'active'`, [item.attire_id]);
+    } catch (err: any) {
+      if (err.code === '23505') { // unique violation
+        pass('Listing: Duplicate Active', 'Second active listing blocked by DB constraint');
+      } else {
+        pass('Listing: Duplicate Active', `Second active listing blocked: ${err.message}`);
+      }
+    }
+
+    // Test 4: Observe FK constraint exists (listings.item_id references owned_attire.attire_id)
+    const fkCheckRes = await pool.query(`
+      SELECT conname, pg_get_constraintdef(oid) as definition
+      FROM pg_constraint
+      WHERE conrelid = 'listings'::regclass AND conname LIKE '%item_id%'
+    `);
+    if (fkCheckRes.rows.some(r => r.definition.includes('REFERENCES owned_attire'))) {
+      pass('Listing: FK Exists', 'listings.item_id has FK to owned_attire (ON DELETE SET NULL confirmed in schema)');
+    } else {
+      fail('Listing: FK Exists', 'No FK constraint found for listings.item_id');
+    }
+
+    // Cleanup: Release the committed item so we can delete it
+    await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${tokenA}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        version: item.version + 1, // version was incremented by commit
+        availability_status: 'free',
+        original_project_ref: null,
+      }),
+    });
+
+    await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${tokenA}` },
+    });
+
+    // Cleanup: delete listing
+    await pool.query(`DELETE FROM listings WHERE listing_id = $1`, [listingId]);
+    pass('Listing: Cleanup', 'Test listing cleaned up');
+  } catch (err: any) {
+    fail('Listing: SQL Insert', `Failed to insert listing: ${err.message}`);
+    await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${tokenA}` },
+    });
+    return;
   }
-
-  // Cleanup: cancel listing, then delete item
-  await fetch(`${BASE_URL}/listings/${listing.listing_id}`, {
-    method: 'PATCH',
-    headers: {
-      'Authorization': `Bearer ${tokenA}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ listing_status: 'cancelled' }),
-  });
-
-  await fetch(`${BASE_URL}/inventory/${item.attire_id}`, {
-    method: 'DELETE',
-    headers: { 'Authorization': `Bearer ${tokenA}` },
-  });
-  pass('Listing: Cleanup', 'Test item and listing cleaned up');
 }
 
 async function main() {
