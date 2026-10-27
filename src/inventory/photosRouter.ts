@@ -13,6 +13,8 @@ import { MAX_PHOTO_BYTES, MAGIC_BYTES } from '../marketplace/photoLimits';
 
 const router = express.Router();
 
+console.log('[photosRouter] Router initialized - POST /photos route will be mounted');
+
 const UPLOADS_DIR = path.join(__dirname, '../../uploads/owned-items');
 
 // Ensure uploads directory exists
