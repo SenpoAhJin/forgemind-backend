@@ -153,11 +153,32 @@ import matcherRouter from './ai/matcherRouter';
 app.use('/api/ai', matcherRouter);
 
 /**
+ * AI Transcription: proxies audio transcription to Flask AI service.
+ * Available to all authenticated users.
+ */
+import transcriptionRouter from './ai/transcriptionRouter';
+app.use('/api/ai', transcriptionRouter);
+
+/**
+ * AI Photo Categorization: proxies photo categorization to Flask AI service.
+ * Available to all authenticated users.
+ */
+import categorizationRouter from './ai/categorizationRouter';
+app.use('/api/ai', categorizationRouter);
+
+/**
  * Trades: user-to-user item trades (swap, sale).
  * M1 Trade Backend - server-side item ownership and state machine.
  */
 import tradesRouter from './trades/tradesRouter';
 app.use('/trades', tradesRouter);
+
+/**
+ * Inventory photos: upload photos for owned items.
+ * Must come before inventoryRouter (JSON-only middleware incompatible with multipart).
+ */
+import inventoryPhotosRouter from './inventory/photosRouter';
+app.use('/inventory', inventoryPhotosRouter);
 
 /**
  * Inventory: marketplace item management on server.
