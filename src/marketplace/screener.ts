@@ -87,39 +87,86 @@ function mergeViolation(list: Violation[], violation: Violation): void {
 }
 
 /**
- * FUTURE AI SECOND LAYER HOOK - INTENTIONALLY A NO-OP.
+ * AI SECOND LAYER HOOK - NOW CONFIGURABLE.
  *
  * A second, semantic pass (for context the regex rules cannot judge: a weapon
- * described without the word, a listing that is not really cosplay) is planned.
- * It will live here, called from here, so the create path, the rescreen path and
- * the future offers path all get it at once.
+ * described without the word, a listing that is not really cosplay) using
+ * scikit-learn TF-IDF plus logistic regression.
  *
- * It is deliberately not wired up now: the plan for it is gated on a decision
- * that has not been made, and calling a service from this file before that
- * decision would put chat-adjacent listing text on the wire to a model nobody
- * has approved. When it lands:
- *
- *   1. add `secondPass(fields) -> Promise<{allowed: boolean; reason?: string}>`
- *   2. run it after the rules pass, and block when either layer blocks
- *   3. keep the rules pass first: it is free, synchronous and deterministic
- *
- * MEASURED, NOT GUESSED
- * A model has since been trained on the same labeled set to see whether a second
- * layer is worth wiring up at all. Trained on 80 percent and scored on the held
- * back 20 percent, scikit-learn TF-IDF plus logistic regression:
- *
+ * Trained on 80 percent and scored on the held back 20 percent:
  *   caught 2687, let through 630, wrongly blocked 987
  *   precision 73.14%, recall 81.01% (blocked recall 81.01%, allowed recall 96.55%)
  *
  * For comparison the rules layer on the same held-out rows reaches recall 48.25%,
  * so the model does catch materially more. It also wrongly blocks 987 innocent rows
- * where the rules layer wrongly blocks 582, which is the trade a marketplace owner
- * has to decide on and not a decision this file should make silently. The backend
- * still does not load the model: see forgemind-ai/scripts/train_screener_classifier.py
- * for the run and forgemind-ai/models/marketplace_screener_lr.joblib for the model.
+ * where the rules layer wrongly blocks 582.
+ *
+ * CONFIGURATION
+ * Controlled by screener_mode in ai_config.json:
+ *   - "words_only": uses only the rule-based word list (default)
+ *   - "words_plus_model": uses word list first, then model as second layer
+ *
+ * The model is called only when screener_mode is "words_plus_model" and only after
+ * the word list passes (so the expensive layer never sees content the cheap layer
+ * already rejected).
  */
-async function aiSecondLayerNoop(_fields: ScreenedFields): Promise<{ allowed: boolean }> {
-  return { allowed: true };
+async function aiSecondLayerNoop(fields: ScreenedFields): Promise<{ allowed: boolean }> {
+  // Check if model mode is enabled
+  const config = await loadAIConfig();
+  const screenerMode = config.screener_mode || 'words_only';
+  
+  if (screenerMode !== 'words_plus_model') {
+    return { allowed: true };
+  }
+  
+  // Combine all text fields for the model
+  const combinedText = [
+    fields.title,
+    fields.description,
+    fields.trade_offered_item || '',
+    fields.trade_wanted_item || '',
+    fields.deposit_note || ''
+  ].filter(Boolean).join(' ');
+  
+  try {
+    // Call Flask AI service
+    const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:5000';
+    const response = await fetch(`${AI_SERVICE_URL}/api/screen-listing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: combinedText })
+    });
+    
+    if (!response.ok) {
+      // If AI service is down or returns error, fall back to allowing (word list already ran)
+      console.error(`AI screener service error: ${response.status}`);
+      return { allowed: true };
+    }
+    
+    const result = await response.json() as { allowed: boolean; blocked?: boolean; confidence?: number };
+    return { allowed: result.allowed };
+    
+  } catch (error) {
+    // Network error or service unavailable: fall back to allowing
+    console.error('AI screener service unavailable:', error);
+    return { allowed: true };
+  }
+}
+
+/**
+ * Load AI configuration from ai_config.json
+ */
+async function loadAIConfig(): Promise<any> {
+  try {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const configPath = path.join(__dirname, '../../..', 'forgemind-ai', 'ai_config.json');
+    const configText = await fs.readFile(configPath, 'utf-8');
+    return JSON.parse(configText);
+  } catch (error) {
+    // Config not found or invalid: return defaults
+    return { screener_mode: 'words_only' };
+  }
 }
 
 /**
